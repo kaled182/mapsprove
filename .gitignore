@@ -1,0 +1,109 @@
+# Conteúdo final do .gitignore com base nas versões anteriores e ajustes finais do projeto MapsProve
+gitignore_content = """# ==============================================
+# CORE DO PROJETO (Configurações Sensíveis)
+# ==============================================
+.env*
+.env.local
+.env.production
+.config/local.json
+config/credentials/**
+
+# Arquivos de API Keys
+google_maps_api.key
+zabbix_api.key
+*.token
+
+# Configurações de infraestrutura
+nginx/sites-enabled/mapsprove*
+docker-compose.override.yml
+
+# ==============================================
+# BANCO DE DADOS & MIGRAÇÕES
+# ==============================================
+# PostgreSQL
+database/.db_credentials
+database/backups/
+*.dump
+*.backup
+
+# Migrações locais (manter apenas as oficiais no repo)
+migrations/local/**
+
+# ==============================================
+# FRONTEND (React + Mapas)
+# ==============================================
+# Build e cache
+build/
+dist/
+.next/
+.cache/
+.turbo/
+
+# Assets gerados
+src/map/**/*.geojson
+!src/map/base_layers/**/*.geojson
+src/map/custom_layers/**
+
+# ==============================================
+# BACKEND (Node.js + Integrações)
+# ==============================================
+node_modules/
+.npm/
+.pnpm/
+
+# Logs e temporários
+*.log
+logs/
+tmp/
+
+# Cache de integração
+.cache/zabbix_queries/
+.cache/google_maps/
+
+# ==============================================
+# DOCKER & DEPLOY
+# ==============================================
+docker-data/
+.dockerignore
+*.docker-compose.yml
+
+# ==============================================
+# MONITORAMENTO (Zabbix + SNMP)
+# ==============================================
+# Dados locais de monitoramento
+snmp_traps/
+zabbix/exports/**
+
+# Configurações locais de agentes
+zabbix_agentd.conf.local
+
+# ==============================================
+# CERTIFICADOS & SEGURANÇA
+# ==============================================
+*.pem
+*.key
+*.crt
+/etc/letsencrypt/live/mapsprove/
+
+# ==============================================
+# IDEs & FERRAMENTAS DE DESENVOLVIMENTO
+# ==============================================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ==============================================
+# SISTEMA & ARQUIVOS TEMPORÁRIOS
+# ==============================================
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+"""
+
+# Salvar o .gitignore em arquivo para download
+gitignore_path = Path("/mnt/data/mapsprove_gitignore.txt")
+gitignore_path.write_text(gitignore_content, encoding="utf-8")
+
+gitignore_path.name
