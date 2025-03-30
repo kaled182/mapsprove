@@ -1,0 +1,17 @@
+# Backend
+backend/config/config.js
+backend/.env
+backend/*.log
+
+# Frontend
+frontend/.env
+frontend/node_modules
+frontend/dist
+
+# IDE
+.vscode
+.idea
+
+# Sistema
+.DS_Store
+*.backup
