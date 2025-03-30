@@ -1,0 +1,109 @@
+# ======================================
+# ⚠️ AVISOS IMPORTANTES
+# ======================================
+# 1. NUNCA compartilhe este arquivo com dados reais.
+# 2. Para produção, gere valores únicos (ex: APP_SECRET).
+# 3. Renomeie para '.env' após configurar.
+
+# ======================================
+# 🛠️ CONFIGURAÇÃO PRINCIPAL DO MAPSPROVE
+# ======================================
+
+# 🔒 Modo de Execução (production | development | debug)
+NODE_ENV=development
+
+# 🌐 Porta da Aplicação
+PORT=3000
+
+# 🌍 Timezone (ex: America/Sao_Paulo)
+APP_TIMEZONE=UTC
+
+# 🔑 Chave Secreta (use: openssl rand -hex 32)
+APP_SECRET=seu_valor_hexadecimal_32_chars
+
+# ======================================
+# 🗺️ INTEGRAÇÃO COM GOOGLE MAPS
+# ======================================
+
+# API Key do Google Maps (obrigatório)
+GOOGLE_MAPS_API_KEY=your_google_maps_api_key_here
+
+# ID do Mapa Personalizado (opcional)
+GOOGLE_MAPS_MAP_ID=your_custom_map_id
+
+# ======================================
+# 📡 INTEGRAÇÃO COM ZABBIX (MONITORAMENTO)
+# ======================================
+
+# URL da API do Zabbix (ex: http://zabbix-server/api_jsonrpc.php)
+ZABBIX_API_URL=http://your-zabbix-server/api_jsonrpc.php
+
+# Credenciais do Zabbix
+ZABBIX_USER=Admin
+ZABBIX_PASSWORD=zabbix_password_here
+
+# Intervalo de Atualização (em segundos)
+ZABBIX_POLL_INTERVAL=60
+
+# ======================================
+# 🐳 CONFIGURAÇÕES DO DOCKER (OPCIONAL)
+# ======================================
+
+# Nome do container PostgreSQL
+DB_CONTAINER_NAME=mapsprove_db
+
+# Credenciais do PostgreSQL
+POSTGRES_USER=mapsprove_user
+POSTGRES_PASSWORD=db_password_here
+POSTGRES_DB=mapsprove_db
+
+# Porta do PostgreSQL (padrão: 5432)
+POSTGRES_PORT=5432
+
+# ======================================
+# 📊 BANCO DE DADOS (LOCAL OU REMOTO)
+# ======================================
+
+# URL de Conexão (substitua se usar DB externo)
+DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DB_CONTAINER_NAME}:${POSTGRES_PORT}/${POSTGRES_DB}?schema=public
+
+# Exemplo para PostgreSQL na AWS:
+# DATABASE_URL=postgresql://user:password@rds-instance.amazonaws.com:5432/dbname
+
+# ======================================
+# 📬 CONFIGURAÇÕES DE E-MAIL (ALERTAS)
+# ======================================
+
+# Servidor SMTP (ex: smtp.gmail.com)
+SMTP_HOST=your_smtp_server
+SMTP_PORT=587
+SMTP_USER=your_email@domain.com
+
+# ⚠️ OPCIONAL: Pode ser omitido em desenvolvimento
+SMTP_PASSWORD=your_email_password
+
+# 🔐 Segurança SMTP (true = porta 465 | false = porta 587)
+SMTP_SECURE=false
+
+# Ignorar verificação TLS (não recomendado)
+SMTP_IGNORE_TLS=false
+
+SMTP_FROM_NAME="MapsProve Alerts"
+SMTP_FROM_EMAIL=noreply@mapsprove.domain
+
+# ======================================
+# 🚨 LIMITES DE ALERTAS (OPCIONAL)
+# ======================================
+
+# Limite de latência para alertas (ms)
+LATENCY_ALERT_THRESHOLD=500
+
+# Limite de perda de pacotes (%)
+PACKET_LOSS_ALERT_THRESHOLD=10
+
+# ======================================
+# 📝 CONFIGURAÇÃO DE LOGS (OPCIONAL)
+# ======================================
+
+LOG_LEVEL=info       # debug | info | warn | error
+LOG_FORMAT=json      # json | simple
