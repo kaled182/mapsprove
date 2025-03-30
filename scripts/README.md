@@ -1,104 +1,143 @@
-# scripts/
+# 📂 scripts/
 
-Este diretório contém scripts automatizados para infraestrutura, deploy e manutenção do sistema MapsProve.
+Este diretório contém scripts automatizados para infraestrutura, deploy e manutenção do sistema **MapsProve**.
 
-## Estrutura do Diretório
+---
+
+## 📁 Estrutura do Diretório
+
+```
 scripts/
-├── infra/ # Infraestrutura principal
-│ ├── setup-server.sh # Provisionamento completo do servidor
-│ ├── deploy.sh # Deploy automatizado
-│ └── backup/ # Scripts de backup
-│ ├── db-backup.sh # Backup do PostgreSQL
-│ └── restore-db.sh # Restauração de banco
-├── tools/ # Utilitários
-│ ├── monitor.sh # Monitoramento de recursos
-│ └── cleanup.sh # Limpeza de arquivos temporários
-└── LICENSE # Licença de uso
+├── infra/              # Infraestrutura principal
+│   ├── setup-server.sh     # Provisionamento completo do servidor
+│   ├── deploy.sh           # Deploy automatizado
+│   └── backup/
+│       ├── db-backup.sh    # Backup do PostgreSQL
+│       └── restore-db.sh   # Restauração de banco
+├── tools/              # Utilitários diversos
+│   ├── monitor.sh          # Monitoramento de recursos
+│   └── cleanup.sh          # Limpeza de arquivos temporários
+└── LICENSE             # Licença de uso
+```
 
-## Script Principal: setup-server.sh
+---
 
-### Visão Geral
+## 🚀 Script Principal: `setup-server.sh`
+
+### 🔎 Visão Geral
+
 Configuração automatizada de um servidor Ubuntu para o MapsProve, incluindo:
+
 - Stack Node.js + PostgreSQL
 - Nginx com SSL (via Certbot)
 - Docker e Docker Compose
-- Segurança básica (UFW, Fail2Ban)
+- Segurança básica: UFW + Fail2Ban
 
-### Pré-requisitos
-```bash
-# Sistema operacional
+---
+
+## 📦 Pré-requisitos
+
+### Sistema Operacional
 - Ubuntu Server 22.04 LTS (recomendado)
-- Acesso root/sudo
-- Conexão com internet
+- Acesso `root` ou `sudo`
+- Conexão com a internet
 
-# Hardware mínimo
+### Requisitos de Hardware
 - 2 vCPUs
-- 4GB RAM
-- 20GB de armazenamento
+- 4GB de RAM
+- 20GB de armazenamento (mínimo)
 
-# Modo completo (recomendado para primeira execução)
+---
+
+## ▶️ Modo de Execução
+
+### 🟢 Execução Completa (recomendada para primeira vez)
+
+```bash
 sudo bash scripts/infra/setup-server.sh --full
+```
 
-# Opções específicas:
+### ⚙️ Modos Específicos (execução parcial)
+
+```bash
 --node-only     # Instala apenas Node.js
 --db-only       # Configura apenas PostgreSQL
 --docker-only   # Instala apenas Docker
---security      # Apenas configurações de segurança
+--security      # Apenas configurações de segurança (firewall, Fail2Ban)
+```
 
-Saída Esperada
-Cria estrutura de diretórios:
-~/mapsprove
+---
+
+## 📂 Saída Esperada
+
+Criação da seguinte estrutura:
+
+```
+~/mapsprove/
 ├── backend/
 ├── frontend/
 ├── database/
-│   ├── .db_credentials  # Arquivo protegido
+│   ├── .db_credentials   # Arquivo protegido com senha do PostgreSQL
 │   └── backups/
-└── logs/setup.log
+└── logs/
+    └── setup.log         # Log completo da instalação
+```
 
-Relatório final no terminal:
-✅ Servidor configurado com sucesso!
-- Node.js v18.12.1
-- PostgreSQL 14.5
-- Docker 20.10.12
+---
 
-Workflow Típico
+## 🧭 Workflow Típico
+
+### 🛠️ Primeira configuração
+```bash
 sudo bash setup-server.sh --full
-Deploy diário:
+```
+
+### 🚀 Deploy diário
+```bash
 bash deploy.sh --env=production
-Backup noturno (via cron):
-0 2 * * * /home/user/mapsprove/scripts/backup/db-backup.sh
+```
 
-Boas Práticas
-Credenciais:
+### 🔁 Backup noturno (exemplo via `cron`)
+```cron
+0 2 * * * /home/user/mapsprove/scripts/infra/backup/db-backup.sh
+```
 
-Nunca faça commit de arquivos .db_credentials
+---
 
-Gere novas credenciais para cada ambiente
+## ✅ Boas Práticas
 
-Execução:
-# Sempre valide o script antes de executar
-bash -n setup-server.sh  # Verifica sintaxe
+### 🔐 Credenciais
+- **Nunca** faça commit de `.db_credentials`
+- Gere novas credenciais para cada ambiente (produção, staging, etc)
 
-Logs:
+### 🧪 Execução segura
+```bash
+bash -n setup-server.sh  # Validação de sintaxe
+```
 
-Consulte ~/mapsprove/logs/setup.log para troubleshooting
+### 📝 Logs
+- Consulte `~/mapsprove/logs/setup.log` para depuração
 
-Troubleshooting Comum
-Erro: "Package not found"
-# Atualize a lista de pacotes primeiro
-sudo apt update
+---
 
-Erro: "Permission denied"
-# Verifique permissões e execute como sudo
-sudo bash script.sh
+## 🧯 Troubleshooting Comum
 
-Erro no PostgreSQL
-# Reinicie o serviço e verifique logs
-sudo systemctl restart postgresql
-journalctl -u postgresql -b
+| Problema                        | Solução                                                                 |
+|--------------------------------|-------------------------------------------------------------------------|
+| `Package not found`            | Execute `sudo apt update` antes de instalar                            |
+| `Permission denied`            | Verifique permissões. Execute como `sudo`                              |
+| Erro no PostgreSQL             | Reinicie o serviço com `sudo systemctl restart postgresql`             |
+| Ver logs do PostgreSQL         | `journalctl -u postgresql -b`                                          |
 
-Licença
-Este projeto está licenciado sob MIT License.
+---
 
-✉️ Contato: paulo@msimplesinternet.net.br
-🐛 Reportar Issues: Issues do GitHub
+## 📄 Licença
+
+Este projeto está licenciado sob os termos da **MIT License**.
+
+---
+
+## 📬 Contato
+
+- ✉️ **Responsável Técnico**: [paulo@msimplesinternet.net.br](mailto:paulo@msimplesinternet.net.br)
+- 🐛 **Reportar bugs/sugestões**: [GitHub Issues](https://github.com/kaled182/mapsprove/issues)
