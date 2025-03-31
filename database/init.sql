@@ -1,0 +1,7 @@
+-- database/init.sql
+CREATE TABLE IF NOT EXISTS routes (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  status BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
