@@ -27,3 +27,34 @@ get_queue_size
 
 # Listar alertas pendentes (JSON)
 get_pending_alerts
+
+Estrutura do Arquivo de Fila
+json
+Copiar
+Editar
+{
+  "version": "0.3.1",
+  "alerts": [
+    {
+      "priority": "high",
+      "type": "disk",
+      "message": "Espaço crítico",
+      "timestamp": 1625097600,
+      "metadata": {"mount": "/var", "usage": 98}
+    }
+  ]
+}
+
+Observações
+Backups: Mantém os últimos 7 arquivos .bak da fila em logs/monitor/queue_backups/.
+
+Promoção de prioridade: Alertas de baixa prioridade sobem automaticamente se não forem tratados em 1 hora.
+
+Atomicidade: Uso de flock para evitar corrupção em ambientes concorrentes.
+
+Dependências: jq, flock.
+
+Integração
+Este módulo é chamado automaticamente pelo sistema de alertas do MapsProve (monitor-alerts).
+
+Contato: Para dúvidas ou sugestões, utilize o canal oficial do projeto.
