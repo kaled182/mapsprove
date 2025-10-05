@@ -24,7 +24,9 @@ import {
   type TopologyLink,
 } from '@/store/topology';
 
-// -------------------- Tipos --------------------
+// =========================
+// Tipos
+// =========================
 
 export type MapViewState = {
   center: [number, number];
@@ -41,10 +43,10 @@ type Props = {
   className?: string;
   height?: string | number;
   width?: string | number;
-  /** Callback quando o viewport muda */
+  /** Dispara quando o mapa estiver pronto (evento 'load') */
+  onLoad?: () => void;
+  /** Callback quando o viewport muda (debounced) */
   onViewChange?: (view: MapViewState) => void;
-  /** Callback quando o mapa terminar de carregar */
-  onLoad?: (map: MLMap) => void;
   /** Filtros customizados para nós/links */
   nodeFilter?: (node: TopologyNode) => boolean;
   linkFilter?: (link: TopologyLink) => boolean;
@@ -58,33 +60,39 @@ type Props = {
   viewChangeDebounceMs?: number;
 };
 
-// Manejo imperativo seguro e tipado para quem consome o componente
+// Handle imperativo exposto via ref
 export type NetworkMapImperativeHandle = {
   /** Instância direta do MapLibre GL */
   getMap: () => MLMap | null;
+
   /** Foca em coordenadas específicas */
   flyTo: (options: {
     center: [number, number];
     zoom?: number;
     duration?: number;
   }) => void;
+
   /** Ajusta vista para caber bounds */
-  fitBounds: (bounds: LngLatBoundsLike, options?: any) => void;
+  fitBounds: (bounds: LngLatBoundsLike, options?: maplibregl.FitBoundsOptions) => void;
+
   /** Volta à vista inicial */
   resetView: () => void;
+
   /** Obtém vista atual */
   getView: () => MapViewState | null;
 
-  /** Métodos extras úteis */
+  /** Utilidades adicionais */
   getZoom: () => number;
   setZoom: (zoom: number) => void;
   getCenter: () => [number, number] | null;
   setCenter: (center: [number, number]) => void;
-  easeTo: (options: any) => void;
-  jumpTo: (options: any) => void;
+  easeTo: (options: maplibregl.EaseToOptions) => void;
+  jumpTo: (options: maplibregl.JumpToOptions) => void;
 };
 
-// -------------------- Constantes --------------------
+// =========================
+// IDs de fontes & camadas
+// =========================
 
 const SOURCE_IDS = {
   LINKS: 'links-src',
@@ -100,17 +108,22 @@ const LAYER_IDS = {
   HIGHLIGHT_LINK: 'highlight-link',
 } as const;
 
+// =========================
+// Constantes
+// =========================
+
 const DEFAULT_STYLE =
   (import.meta as any)?.env?.VITE_MAP_STYLE_URL ||
   'https://demotiles.maplibre.org/style.json';
 
 const DEFAULT_VIEW: MapViewState = {
-  center: [-47.8825, -15.7942] as [number, number], // Brasília
+  center: [-47.8825, -15.7942],
   zoom: 4,
   pitch: 0,
   bearing: 0,
 };
 
+// Paleta de cores estendida
 const STATUS_COLORS = {
   up: '#22c55e',
   degraded: '#f59e0b',
@@ -120,6 +133,7 @@ const STATUS_COLORS = {
   hover: '#8b5cf6',
 };
 
+// Configurações de performance
 const PERFORMANCE_CONFIG = {
   MAX_NODES_FOR_AUTO_FIT: 1000,
   DEBOUNCE_VIEW_CHANGE: 500,
@@ -127,7 +141,9 @@ const PERFORMANCE_CONFIG = {
   FIT_PADDING: 60,
 };
 
-// -------------------- Helpers --------------------
+// =========================
+// Helpers
+// =========================
 
 function colorByStatusExpression(get: 'status' | 'nodeStatus' = 'status') {
   return [
@@ -222,11 +238,11 @@ function computeBoundsFromNodes(
   if (!coords.length) return null;
 
   const bounds = new maplibregl.LngLatBounds();
-  coords.forEach((coord) => bounds.extend(coord as [number, number]));
-
+  coords.forEach((coord) => bounds.extend(coord));
   return bounds.toArray();
 }
 
+// Popups
 const popupHTMLForNode = (props: any) => {
   const statusColor =
     STATUS_COLORS[props.nodeStatus as keyof typeof STATUS_COLORS] ||
@@ -238,9 +254,15 @@ const popupHTMLForNode = (props: any) => {
         <div style="width:8px;height:8px;border-radius:50%;background:${statusColor}"></div>
         <div style="font-weight:600;font-size:14px">${props.name || props.id}</div>
       </div>
-      <div style="font-size:12px;color:#64748b;margin-bottom:2px"><strong>ID:</strong> ${props.id}</div>
-      <div style="font-size:12px;color:#64748b;margin-bottom:2px"><strong>Tipo:</strong> ${props.type}</div>
-      <div style="font-size:12px;color:#64748b;margin-bottom:2px"><strong>Status:</strong> <span style="color:${statusColor}">${props.nodeStatus}</span></div>
+      <div style="font-size:12px;color:#64748b;margin-bottom:2px">
+        <strong>ID:</strong> ${props.id}
+      </div>
+      <div style="font-size:12px;color:#64748b;margin-bottom:2px">
+        <strong>Tipo:</strong> ${props.type}
+      </div>
+      <div style="font-size:12px;color:#64748b;margin-bottom:2px">
+        <strong>Status:</strong> <span style="color:${statusColor}">${props.nodeStatus}</span>
+      </div>
       ${
         props.meta && Object.keys(props.meta).length > 0
           ? `
@@ -252,17 +274,15 @@ const popupHTMLForNode = (props: any) => {
               ([key, value]) => `
             <div style="font-size:11px;color:#475569">
               <strong>${key}:</strong> ${String(value).slice(0, 30)}${
-                  String(value).length > 30 ? '...' : ''
-                }
+                String(value).length > 30 ? '...' : ''
+              }
             </div>
           `
             )
             .join('')}
           ${
             Object.keys(props.meta).length > 3
-              ? `<div style="font-size:11px;color:#94a3b8">+${
-                  Object.keys(props.meta).length - 3
-                } mais</div>`
+              ? `<div style="font-size:11px;color:#94a3b8">+${Object.keys(props.meta).length - 3} mais</div>`
               : ''
           }
         </div>
@@ -291,18 +311,53 @@ const popupHTMLForLink = (props: any) => {
         <div style="width:8px;height:8px;border-radius:50%;background:${statusColor}"></div>
         <div style="font-weight:600;font-size:14px">Link ${props.id}</div>
       </div>
-      <div style="font-size:12px;color:#64748b;margin-bottom:2px"><strong>De:</strong> ${props.source}</div>
-      <div style="font-size:12px;color:#64748b;margin-bottom:2px"><strong>Para:</strong> ${props.target}</div>
-      <div style="font-size:12px;color:#64748b;margin-bottom:2px"><strong>Status:</strong> <span style="color:${statusColor}">${props.status}</span></div>
-      <div style="font-size:12px;color:#64748b;margin-bottom:2px"><strong>Utilização:</strong> <span style="color:${utilizationColor};margin-left:4px">${utilizationPercent}%</span></div>
-      ${props.distanceKm ? `<div style="font-size:12px;color:#64748b;margin-bottom:2px"><strong>Distância:</strong> ${props.distanceKm} km</div>` : ''}
-      ${props.bandwidth ? `<div style="font-size:12px;color:#64748b;margin-bottom:2px"><strong>Largura de banda:</strong> ${props.bandwidth} Mbps</div>` : ''}
-      ${props.fiber ? `<div style="font-size:12px;color:#64748b;margin-bottom:2px"><strong>Tipo:</strong> Fibra óptica</div>` : ''}
+      <div style="font-size:12px;color:#64748b;margin-bottom:2px">
+        <strong>De:</strong> ${props.source}
+      </div>
+      <div style="font-size:12px;color:#64748b;margin-bottom:2px">
+        <strong>Para:</strong> ${props.target}
+      </div>
+      <div style="font-size:12px;color:#64748b;margin-bottom:2px">
+        <strong>Status:</strong> <span style="color:${statusColor}">${props.status}</span>
+      </div>
+      <div style="font-size:12px;color:#64748b;margin-bottom:2px">
+        <strong>Utilização:</strong> 
+        <span style="color:${utilizationColor};margin-left:4px">${utilizationPercent}%</span>
+      </div>
+      ${
+        props.distanceKm
+          ? `
+        <div style="font-size:12px;color:#64748b;margin-bottom:2px">
+          <strong>Distância:</strong> ${props.distanceKm} km
+        </div>
+      `
+          : ''
+      }
+      ${
+        props.bandwidth
+          ? `
+        <div style="font-size:12px;color:#64748b;margin-bottom:2px">
+          <strong>Largura de banda:</strong> ${props.bandwidth} Mbps
+        </div>
+      `
+          : ''
+      }
+      ${
+        props.fiber
+          ? `
+        <div style="font-size:12px;color:#64748b;margin-bottom:2px">
+          <strong>Tipo:</strong> Fibra óptica
+        </div>
+      `
+          : ''
+      }
     </div>
   `;
 };
 
-// -------------------- Componente principal com forwardRef --------------------
+// =========================
+// Componente
+// =========================
 
 const NetworkMap = forwardRef<NetworkMapImperativeHandle, Props>(function NetworkMap(
   {
@@ -313,8 +368,8 @@ const NetworkMap = forwardRef<NetworkMapImperativeHandle, Props>(function Networ
     className,
     height = '100%',
     width = '100%',
-    onViewChange,
     onLoad,
+    onViewChange,
     nodeFilter,
     linkFilter,
     showControls = true,
@@ -324,87 +379,18 @@ const NetworkMap = forwardRef<NetworkMapImperativeHandle, Props>(function Networ
   }: Props,
   forwardedRef
 ) {
-  // Store
+  // Dados reativos
   const nodes = useTopologyStore(selectVisibleNodes);
   const links = useTopologyStore(selectVisibleLinks);
   const selected = useTopologyStore(selectSelected);
 
-  // Refs internos
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MLMap | null>(null);
   const popupRef = useRef<Popup | null>(null);
-  const hoveredFeatureIdRef = useRef<string | null>(null);
   const viewChangeTimeoutRef = useRef<number | null>(null);
   const [isMapLoaded, setIsMapLoaded] = useState(false);
 
-  // Expor métodos imperativos
-  useImperativeHandle(
-    forwardedRef,
-    () => ({
-      getMap: () => mapRef.current,
-      flyTo: (options) => {
-        if (mapRef.current) {
-          mapRef.current.flyTo({
-            center: options.center,
-            zoom: options.zoom ?? mapRef.current.getZoom(),
-            duration: options.duration ?? 1000,
-          });
-        }
-      },
-      fitBounds: (bounds, options = {}) => {
-        if (mapRef.current) {
-          mapRef.current.fitBounds(bounds, {
-            padding: fitPadding ?? PERFORMANCE_CONFIG.FIT_PADDING,
-            duration: fitDuration ?? PERFORMANCE_CONFIG.FIT_DURATION,
-            maxZoom: 15,
-            ...options,
-          });
-        }
-      },
-      resetView: () => {
-        if (mapRef.current) {
-          mapRef.current.easeTo({
-            center: initialView?.center ?? DEFAULT_VIEW.center,
-            zoom: initialView?.zoom ?? DEFAULT_VIEW.zoom,
-            pitch: initialView?.pitch ?? DEFAULT_VIEW.pitch,
-            bearing: initialView?.bearing ?? DEFAULT_VIEW.bearing,
-            duration: 800,
-          });
-        }
-      },
-      getView: (): MapViewState | null => {
-        if (!mapRef.current) return null;
-        const center = mapRef.current.getCenter();
-        return {
-          center: [center.lng, center.lat],
-          zoom: mapRef.current.getZoom(),
-          pitch: mapRef.current.getPitch(),
-          bearing: mapRef.current.getBearing(),
-        };
-      },
-      getZoom: () => mapRef.current?.getZoom() ?? 0,
-      setZoom: (zoom: number) => {
-        if (mapRef.current) mapRef.current.setZoom(zoom);
-      },
-      getCenter: () => {
-        if (!mapRef.current) return null;
-        const c = mapRef.current.getCenter();
-        return [c.lng, c.lat] as [number, number];
-      },
-      setCenter: (center: [number, number]) => {
-        if (mapRef.current) mapRef.current.setCenter(center);
-      },
-      easeTo: (options: any) => {
-        if (mapRef.current) mapRef.current.easeTo(options);
-      },
-      jumpTo: (options: any) => {
-        if (mapRef.current) mapRef.current.jumpTo(options);
-      },
-    }),
-    [initialView, fitPadding, fitDuration]
-  );
-
-  // Índice rápido de nós
+  // Índice de nós
   const nodeIndex = useMemo(() => {
     const idx = new Map<string, { lon: number; lat: number; status?: string }>();
     for (const n of nodes) {
@@ -427,7 +413,7 @@ const NetworkMap = forwardRef<NetworkMapImperativeHandle, Props>(function Networ
   );
 
   // Debounce de mudanças de viewport
-  const handleViewChange = useCallback(
+  const emitViewChange = useCallback(
     (map: MLMap) => {
       if (!onViewChange) return;
 
@@ -460,7 +446,7 @@ const NetworkMap = forwardRef<NetworkMapImperativeHandle, Props>(function Networ
       pitch: initialView.pitch ?? DEFAULT_VIEW.pitch,
       bearing: initialView.bearing ?? DEFAULT_VIEW.bearing,
       attributionControl: true,
-      preserveDrawingBuffer: true, // permite export/screenshot
+      preserveDrawingBuffer: true,
     });
 
     mapRef.current = map;
@@ -471,12 +457,8 @@ const NetworkMap = forwardRef<NetworkMapImperativeHandle, Props>(function Networ
       className: 'network-map-popup',
     });
 
-    // Controles
     if (showControls) {
-      map.addControl(
-        new maplibregl.NavigationControl({ visualizePitch: true }),
-        'top-right'
-      );
+      map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
       map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left');
       map.addControl(
         new maplibregl.GeolocateControl({
@@ -488,61 +470,7 @@ const NetworkMap = forwardRef<NetworkMapImperativeHandle, Props>(function Networ
       );
     }
 
-    // Load
-    const onMapLoad = () => {
-      setIsMapLoaded(true);
-      setupMapLayers(map);
-      setupMapInteractions(map);
-
-      // Fit inicial
-      if (
-        fitToData &&
-        nodes.length > 0 &&
-        nodes.length <= PERFORMANCE_CONFIG.MAX_NODES_FOR_AUTO_FIT
-      ) {
-        performFitToData(map);
-      }
-
-      onLoad?.(map);
-    };
-
-    map.on('load', onMapLoad);
-    map.on('moveend', () => handleViewChange(map));
-
-    // Resize observer
-    const resizeObserver = new ResizeObserver(() => {
-      map.resize();
-    });
-    if (containerRef.current) resizeObserver.observe(containerRef.current);
-
-    // Cleanup robusto
-    return () => {
-      resizeObserver.disconnect();
-
-      if (viewChangeTimeoutRef.current) {
-        window.clearTimeout(viewChangeTimeoutRef.current);
-      }
-
-      popupRef.current?.remove();
-
-      if (mapRef.current) {
-        try {
-          mapRef.current.remove();
-        } catch (error) {
-          console.debug('Error during map cleanup:', error);
-        }
-        mapRef.current = null;
-      }
-
-      setIsMapLoaded(false);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [styleUrl, showControls]);
-
-  // Camadas
-  const setupMapLayers = useCallback(
-    (map: MLMap) => {
-      // Sources
+    const setupMapLayers = () => {
       if (!map.getSource(SOURCE_IDS.LINKS)) {
         map.addSource(SOURCE_IDS.LINKS, {
           type: 'geojson',
@@ -550,14 +478,12 @@ const NetworkMap = forwardRef<NetworkMapImperativeHandle, Props>(function Networ
           lineMetrics: true,
         });
       }
-
       if (!map.getSource(SOURCE_IDS.NODES)) {
         map.addSource(SOURCE_IDS.NODES, {
           type: 'geojson',
           data: nodesGeo as any,
         });
       }
-
       if (!map.getSource(SOURCE_IDS.HIGHLIGHT)) {
         map.addSource(SOURCE_IDS.HIGHLIGHT, {
           type: 'geojson',
@@ -597,7 +523,7 @@ const NetworkMap = forwardRef<NetworkMapImperativeHandle, Props>(function Networ
         });
       }
 
-      // Nodes
+      // Nós
       if (!map.getLayer(LAYER_IDS.NODES)) {
         map.addLayer({
           id: LAYER_IDS.NODES,
@@ -645,7 +571,7 @@ const NetworkMap = forwardRef<NetworkMapImperativeHandle, Props>(function Networ
         });
       }
 
-      // Labels
+      // Rótulos
       if (showLabels && !map.getLayer(LAYER_IDS.LABELS)) {
         map.addLayer({
           id: LAYER_IDS.LABELS,
@@ -668,7 +594,7 @@ const NetworkMap = forwardRef<NetworkMapImperativeHandle, Props>(function Networ
         });
       }
 
-      // Highlight Node
+      // Highlight node
       if (!map.getLayer(LAYER_IDS.HIGHLIGHT_NODE)) {
         map.addLayer({
           id: LAYER_IDS.HIGHLIGHT_NODE,
@@ -684,7 +610,7 @@ const NetworkMap = forwardRef<NetworkMapImperativeHandle, Props>(function Networ
         });
       }
 
-      // Highlight Link
+      // Highlight link
       if (!map.getLayer(LAYER_IDS.HIGHLIGHT_LINK)) {
         map.addLayer({
           id: LAYER_IDS.HIGHLIGHT_LINK,
@@ -701,67 +627,138 @@ const NetworkMap = forwardRef<NetworkMapImperativeHandle, Props>(function Networ
           },
         });
       }
-    },
-    [showLabels, linksGeo, nodesGeo]
-  );
-
-  // Interações
-  const setupMapInteractions = useCallback((map: MLMap) => {
-    const setPointer = (on: boolean) =>
-      map.getCanvas().style.setProperty('cursor', on ? 'pointer' : '');
-
-    const handleMouseEnter = (e: MapLayerMouseEvent) => {
-      setPointer(true);
-      const f = e.features?.[0];
-      if (f) {
-        hoveredFeatureIdRef.current = (f.properties as any)?.id ?? null;
-      }
     };
 
-    const handleMouseLeave = () => {
-      setPointer(false);
-      hoveredFeatureIdRef.current = null;
-    };
+    const setupMapInteractions = () => {
+      const setPointer = (on: boolean) =>
+        map.getCanvas().style.setProperty('cursor', on ? 'pointer' : '');
 
-    map.on('mousemove', LAYER_IDS.LINKS, handleMouseEnter);
-    map.on('mouseleave', LAYER_IDS.LINKS, handleMouseLeave);
-    map.on('mousemove', LAYER_IDS.NODES, handleMouseEnter);
-    map.on('mouseleave', LAYER_IDS.NODES, handleMouseLeave);
+      const handleMouseEnter = () => setPointer(true);
+      const handleMouseLeave = () => setPointer(false);
 
-    map.on('click', LAYER_IDS.NODES, (e: MapLayerMouseEvent) => {
-      const f = e.features?.[0];
-      if (!f) return;
-      const p = f.properties as any;
-      useTopologyStore.getState().setSelectedNode(p.id);
+      map.on('mousemove', LAYER_IDS.LINKS, handleMouseEnter);
+      map.on('mouseleave', LAYER_IDS.LINKS, handleMouseLeave);
+      map.on('mousemove', LAYER_IDS.NODES, handleMouseEnter);
+      map.on('mouseleave', LAYER_IDS.NODES, handleMouseLeave);
 
-      const popup = popupRef.current!;
-      popup.setLngLat(e.lngLat);
-      popup.setHTML(popupHTMLForNode(p)).addTo(map);
-    });
+      map.on('click', LAYER_IDS.NODES, (e: MapLayerMouseEvent) => {
+        const f = e.features?.[0];
+        if (!f) return;
+        const p = f.properties as any;
+        useTopologyStore.getState().setSelectedNode(p.id);
 
-    map.on('click', LAYER_IDS.LINKS, (e: MapLayerMouseEvent) => {
-      const f = e.features?.[0];
-      if (!f) return;
-      const p = f.properties as any;
-      useTopologyStore.getState().setSelectedLink(p.id);
-
-      const popup = popupRef.current!;
-      popup.setLngLat(e.lngLat);
-      popup.setHTML(popupHTMLForLink(p)).addTo(map);
-    });
-
-    map.on('dblclick', LAYER_IDS.NODES, (e: MapLayerMouseEvent) => {
-      map.easeTo({
-        center: e.lngLat,
-        zoom: Math.min(map.getZoom() + 2, 18),
-        duration: 500,
+        popupRef.current?.setLngLat(e.lngLat);
+        popupRef.current?.setHTML(popupHTMLForNode(p)).addTo(map);
       });
-    });
-  }, []);
 
-  // Fit to data
-  const performFitToData = useCallback(
-    (map: MLMap) => {
+      map.on('click', LAYER_IDS.LINKS, (e: MapLayerMouseEvent) => {
+        const f = e.features?.[0];
+        if (!f) return;
+        const p = f.properties as any;
+        useTopologyStore.getState().setSelectedLink(p.id);
+
+        popupRef.current?.setLngLat(e.lngLat);
+        popupRef.current?.setHTML(popupHTMLForLink(p)).addTo(map);
+      });
+
+      map.on('dblclick', LAYER_IDS.NODES, (e: MapLayerMouseEvent) => {
+        map.easeTo({
+          center: e.lngLat,
+          zoom: Math.min(map.getZoom() + 2, 18),
+          duration: 500,
+        });
+      });
+    };
+
+    map.on('load', () => {
+      setIsMapLoaded(true);
+      setupMapLayers();
+      setupMapInteractions();
+
+      // Fit inicial
+      if (
+        fitToData &&
+        nodes.length > 0 &&
+        nodes.length <= PERFORMANCE_CONFIG.MAX_NODES_FOR_AUTO_FIT
+      ) {
+        const bounds = computeBoundsFromNodes(nodes);
+        if (bounds) {
+          try {
+            map.fitBounds(bounds, {
+              padding: fitPadding,
+              duration: fitDuration,
+              maxZoom: 15,
+            });
+          } catch (err) {
+            console.warn('Fit bounds on load failed:', err);
+          }
+        }
+      }
+
+      onLoad?.();
+    });
+
+    map.on('moveend', () => emitViewChange(map));
+
+    // Resize observer
+    const resizeObserver = new ResizeObserver(() => {
+      map.resize();
+    });
+    if (containerRef.current) resizeObserver.observe(containerRef.current);
+
+    // Cleanup
+    return () => {
+      resizeObserver.disconnect();
+
+      if (viewChangeTimeoutRef.current) {
+        window.clearTimeout(viewChangeTimeoutRef.current);
+      }
+
+      popupRef.current?.remove();
+
+      if (mapRef.current) {
+        try {
+          mapRef.current.remove();
+        } catch (error) {
+          console.debug('Error during map cleanup:', error);
+        }
+        mapRef.current = null;
+      }
+
+      setIsMapLoaded(false);
+    };
+  }, [
+    styleUrl,
+    showControls,
+    initialView.center,
+    initialView.zoom,
+    initialView.pitch,
+    initialView.bearing,
+    fitToData,
+    fitPadding,
+    fitDuration,
+    nodes.length,
+    emitViewChange,
+    onLoad,
+  ]);
+
+  // Atualização de dados em fontes
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapLoaded) return;
+
+    const linksSrc = map.getSource(SOURCE_IDS.LINKS) as maplibregl.GeoJSONSource;
+    const nodesSrc = map.getSource(SOURCE_IDS.NODES) as maplibregl.GeoJSONSource;
+
+    linksSrc?.setData(linksGeo as any);
+    nodesSrc?.setData(nodesGeo as any);
+
+    // Auto-fit opcional a cada atualização
+    if (
+      fitToData &&
+      nodes.length > 0 &&
+      nodes.length <= PERFORMANCE_CONFIG.MAX_NODES_FOR_AUTO_FIT
+    ) {
       const bounds = computeBoundsFromNodes(nodes);
       if (bounds) {
         try {
@@ -770,36 +767,14 @@ const NetworkMap = forwardRef<NetworkMapImperativeHandle, Props>(function Networ
             duration: fitDuration,
             maxZoom: 15,
           });
-        } catch (error) {
-          console.warn('Fit bounds failed:', error);
+        } catch {
+          /* noop */
         }
       }
-    },
-    [nodes, fitPadding, fitDuration]
-  );
-
-  // Atualização de dados (sources)
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !isMapLoaded) return;
-
-    const linksSrc = map.getSource(SOURCE_IDS.LINKS) as maplibregl.GeoJSONSource;
-    const nodesSrc = map.getSource(SOURCE_IDS.NODES) as maplibregl.GeoJSONSource;
-
-    if (linksSrc) linksSrc.setData(linksGeo as any);
-    if (nodesSrc) nodesSrc.setData(nodesGeo as any);
-
-    // Auto-fit opcional
-    if (
-      fitToData &&
-      nodes.length > 0 &&
-      nodes.length <= PERFORMANCE_CONFIG.MAX_NODES_FOR_AUTO_FIT
-    ) {
-      performFitToData(map);
     }
-  }, [nodesGeo, linksGeo, isMapLoaded, fitToData, performFitToData, nodes.length]);
+  }, [nodesGeo, linksGeo, isMapLoaded, fitToData, fitPadding, fitDuration, nodes.length]);
 
-  // Highlight seleção
+  // Highlight de seleção
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !isMapLoaded) return;
@@ -814,7 +789,10 @@ const NetworkMap = forwardRef<NetworkMapImperativeHandle, Props>(function Networ
       if (Number.isFinite(node.lon) && Number.isFinite(node.lat)) {
         features.push({
           type: 'Feature',
-          geometry: { type: 'Point', coordinates: [node.lon!, node.lat!] },
+          geometry: {
+            type: 'Point',
+            coordinates: [node.lon!, node.lat!],
+          },
           properties: { id: node.id, type: 'node' },
         } as GeoJSON.Feature);
       }
@@ -844,6 +822,83 @@ const NetworkMap = forwardRef<NetworkMapImperativeHandle, Props>(function Networ
       features,
     } as GeoJSON.FeatureCollection);
   }, [selected, nodeIndex, isMapLoaded]);
+
+  // Expor API imperativa
+  useImperativeHandle(
+    forwardedRef,
+    () => ({
+      getMap: () => mapRef.current,
+
+      flyTo: (options) => {
+        if (mapRef.current) {
+          mapRef.current.flyTo({
+            center: options.center,
+            zoom: options.zoom ?? mapRef.current.getZoom(),
+            duration: options.duration ?? 1000,
+          });
+        }
+      },
+
+      fitBounds: (bounds, options = {}) => {
+        if (mapRef.current) {
+          mapRef.current.fitBounds(bounds, {
+            padding: fitPadding,
+            duration: fitDuration,
+            maxZoom: 15,
+            ...options,
+          });
+        }
+      },
+
+      resetView: () => {
+        if (mapRef.current) {
+          mapRef.current.easeTo({
+            center: initialView.center ?? DEFAULT_VIEW.center,
+            zoom: initialView.zoom ?? DEFAULT_VIEW.zoom,
+            pitch: initialView.pitch ?? DEFAULT_VIEW.pitch,
+            bearing: initialView.bearing ?? DEFAULT_VIEW.bearing,
+            duration: 800,
+          });
+        }
+      },
+
+      getView: (): MapViewState | null => {
+        if (!mapRef.current) return null;
+        const center = mapRef.current.getCenter();
+        return {
+          center: [center.lng, center.lat],
+          zoom: mapRef.current.getZoom(),
+          pitch: mapRef.current.getPitch(),
+          bearing: mapRef.current.getBearing(),
+        };
+      },
+
+      getZoom: () => mapRef.current?.getZoom() ?? 0,
+
+      setZoom: (zoom: number) => {
+        if (mapRef.current) mapRef.current.setZoom(zoom);
+      },
+
+      getCenter: () => {
+        if (!mapRef.current) return null;
+        const c = mapRef.current.getCenter();
+        return [c.lng, c.lat] as [number, number];
+      },
+
+      setCenter: (center: [number, number]) => {
+        mapRef.current?.setCenter(center);
+      },
+
+      easeTo: (options: maplibregl.EaseToOptions) => {
+        mapRef.current?.easeTo(options);
+      },
+
+      jumpTo: (options: maplibregl.JumpToOptions) => {
+        mapRef.current?.jumpTo(options);
+      },
+    }),
+    [fitDuration, fitPadding, initialView]
+  );
 
   return (
     <div
@@ -880,11 +935,23 @@ const NetworkMap = forwardRef<NetworkMapImperativeHandle, Props>(function Networ
 
 export default NetworkMap;
 
-// -------------------- Exports auxiliares --------------------
+// =========================
+// Exports auxiliares
+// =========================
 
-export type { NetworkMapImperativeHandle, MapViewState };
 export type { Props as NetworkMapProps };
+export type { NetworkMapImperativeHandle };
 
-export function createBoundsFromNodes(nodes: TopologyNode[]): LngLatBoundsLike | null {
-  return computeBoundsFromNodes(nodes);
+// Utilitário para criar bounds a partir de nós
+export function createBoundsFromNodes(
+  nodes: TopologyNode[]
+): LngLatBoundsLike | null {
+  const filtered = nodes.filter(
+    (n) => Number.isFinite(n.lat) && Number.isFinite(n.lon)
+  );
+  if (filtered.length === 0) return null;
+
+  const bounds = new maplibregl.LngLatBounds();
+  filtered.forEach((n) => bounds.extend([n.lon!, n.lat!]));
+  return bounds.toArray();
 }
