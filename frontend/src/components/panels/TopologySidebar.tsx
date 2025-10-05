@@ -1,5 +1,5 @@
 // frontend/src/components/panels/TopologySidebar.tsx
-import React, { useMemo, useState, useCallback } from 'react';
+import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
 import TopologyFilters, { ActiveFiltersBadge } from '@/components/topology/TopologyFilters';
 import {
   useSelection,
@@ -10,47 +10,69 @@ import {
   type TopologyNode,
   type TopologyLink,
 } from '@/store/topology';
+import NodeInfoCard from './NodeInfoCard';
+import LinkInfoCard from './LinkInfoCard';
 
-// ------- Tipagem do módulo de alertas (opcional) -------
+// Importação segura do hook de alertas (evita crash caso o módulo não exista)
 type AlertsApi = {
-  criticalAlerts: Array<{ id: string; level: 'critical' | 'warn' | 'info'; message: string; host?: string; createdAt: number }>;
-  alerts: Array<{ id: string; level: 'critical' | 'warn' | 'info'; message: string; host?: string; createdAt: number }>;
+  connected: boolean;
+  status: 'idle' | 'connecting' | 'open' | 'closed' | 'error' | 'paused';
+  alerts: any[];
+  criticalAlerts: any[];
   clearAlerts?: () => void;
-};
+} | undefined;
 
-// Importação segura do hook de alertas
-let useAlertsStream: undefined | (() => AlertsApi);
+let _useAlertsStream: undefined | (() => AlertsApi);
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  useAlertsStream = require('@/hooks/useStatusStream').useAlertsStream;
+  _useAlertsStream = require('@/hooks/useStatusStream').useAlertsStream;
 } catch {
-  useAlertsStream = undefined;
+  _useAlertsStream = undefined;
 }
 
 type Props = {
   className?: string;
+  /** Compacta os controles dos filtros */
   compactFilters?: boolean;
+  /** Exibe seções avançadas nos filtros */
   showAdvancedFilters?: boolean;
+  /** Filtros podem ser colapsados internamente */
   collapsibleFilters?: boolean;
+  /** Mostra a aba de alertas */
   showAlertsSection?: boolean;
+  /** Mostra a aba de problemas (nós/links problemáticos) */
   showProblemsSection?: boolean;
+  /** Focar nó no mapa */
   onFocusNode?: (nodeId: string) => void;
+  /** Focar link no mapa */
   onFocusLink?: (linkId: string) => void;
+  /** Ajustar visão do mapa aos dados */
   onFitToData?: () => void;
+  /** Resetar visão do mapa */
   onResetView?: () => void;
+  /** Exportar o mapa */
   onExportMap?: () => void;
-  /** Callback quando sidebar é expandida/recolhida */
+  /** Callback quando sidebar é expandida/recolhida (true = expandido) */
   onToggle?: (expanded: boolean) => void;
+  /** Aba inicial */
+  initialTab?: 'filters' | 'alerts' | 'problems' | 'details';
 };
 
 type SidebarTab = 'filters' | 'alerts' | 'problems' | 'details';
 
-// -------------------- UI utilitários --------------------
-
-function CountBadge({ count, color = 'blue' }: { count: number; color?: 'red' | 'blue' | 'green' | 'yellow' }) {
+/** Badge simples com contador e variação de cor */
+function CountBadge({
+  count,
+  color = 'blue',
+  className = '',
+}: {
+  count: number;
+  color?: 'red' | 'blue' | 'green' | 'yellow';
+  className?: string;
+}) {
   if (count === 0) return null;
 
-  const colorClasses = {
+  const colorClasses: Record<typeof color, string> = {
     red: 'bg-red-100 text-red-800',
     blue: 'bg-blue-100 text-blue-800',
     green: 'bg-green-100 text-green-800',
@@ -58,12 +80,19 @@ function CountBadge({ count, color = 'blue' }: { count: number; color?: 'red' | 
   };
 
   return (
-    <span className={`ml-2 px-2 py-0.5 rounded-full text-xs font-medium ${colorClasses[color]}`}>
+    <span
+      className={[
+        'ml-2 px-2 py-0.5 rounded-full text-xs font-medium',
+        colorClasses[color],
+        className,
+      ].join(' ')}
+    >
       {count}
     </span>
   );
 }
 
+/** Seção colapsável (sem dependência externa) */
 function CollapsibleSection({
   title,
   defaultOpen = true,
@@ -81,8 +110,9 @@ function CollapsibleSection({
     <div className="border-b border-slate-200 last:border-b-0">
       <button
         type="button"
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={() => setIsOpen((v) => !v)}
         className="w-full flex items-center justify-between py-3 px-4 text-sm font-medium text-slate-900 hover:bg-slate-50 transition-colors"
+        aria-expanded={isOpen}
       >
         <div className="flex items-center">
           <span>{title}</span>
@@ -95,8 +125,9 @@ function CollapsibleSection({
   );
 }
 
-// -------------------- Sidebar --------------------
-
+/** ======================
+ * Componente principal
+ * ====================== */
 export default function TopologySidebar({
   className,
   compactFilters = false,
@@ -110,27 +141,33 @@ export default function TopologySidebar({
   onResetView,
   onExportMap,
   onToggle,
+  initialTab = 'filters',
 }: Props) {
   const { node, link } = useSelection();
   const stats = useTopologyStats();
   const problemNodes = useProblemNodes();
   const problemLinks = useProblemLinks();
-  const alertsApi = useAlertsStream?.();
+  const alertsApi: AlertsApi = _useAlertsStream?.();
 
-  const [activeTab, setActiveTab] = useState<SidebarTab>('filters');
+  const [activeTab, setActiveTab] = useState<SidebarTab>(initialTab);
   const [isCollapsed, setIsCollapsed] = useState(false);
 
-  // Estatísticas calculadas
-  const criticalCount = alertsApi ? alertsApi.criticalAlerts.length : 0;
+  // Acessibilidade: navegação por teclado nas tabs
+  const tabsRef = useRef<HTMLDivElement>(null);
+
+  // Cálculos de contagem
+  const criticalCount = alertsApi?.criticalAlerts.length ?? 0;
+  const totalAlerts = alertsApi?.alerts.length ?? 0;
   const problemNodesCount = problemNodes.length;
   const problemLinksCount = problemLinks.length;
 
   const handleToggleCollapse = useCallback(() => {
     const newState = !isCollapsed;
     setIsCollapsed(newState);
-    onToggle?.(newState);
+    onToggle?.(!newState ? true : false);
   }, [isCollapsed, onToggle]);
 
+  // Definição das tabs com badges dinâmicos
   const tabs = useMemo(() => {
     const items: Array<{
       id: SidebarTab;
@@ -147,7 +184,7 @@ export default function TopologySidebar({
         id: 'alerts',
         label: 'Alertas',
         icon: '🚨',
-        badge: <CountBadge count={criticalCount} color="red" />,
+        badge: <CountBadge count={criticalCount || totalAlerts} color={criticalCount ? 'red' : 'yellow'} />,
       });
     }
 
@@ -156,12 +193,38 @@ export default function TopologySidebar({
         id: 'problems',
         label: 'Problemas',
         icon: '⚠️',
-        badge: <CountBadge count={problemNodesCount + problemLinksCount} color="yellow" />,
+        badge: (
+          <CountBadge count={problemNodesCount + problemLinksCount} color="yellow" />
+        ),
       });
     }
 
     return items;
-  }, [showAlertsSection, showProblemsSection, criticalCount, problemNodesCount, problemLinksCount]);
+  }, [
+    showAlertsSection,
+    showProblemsSection,
+    criticalCount,
+    totalAlerts,
+    problemNodesCount,
+    problemLinksCount,
+  ]);
+
+  // Keyboard nav nas tabs (setas esquerda/direita)
+  useEffect(() => {
+    const el = tabsRef.current;
+    if (!el) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      e.preventDefault();
+      const order = tabs.map((t) => t.id);
+      const idx = order.indexOf(activeTab);
+      if (idx < 0) return;
+      const nextIdx = e.key === 'ArrowRight' ? (idx + 1) % order.length : (idx - 1 + order.length) % order.length;
+      setActiveTab(order[nextIdx]);
+    };
+    el.addEventListener('keydown', handler);
+    return () => el.removeEventListener('keydown', handler);
+  }, [activeTab, tabs]);
 
   if (isCollapsed) {
     return (
@@ -175,6 +238,7 @@ export default function TopologySidebar({
           onClick={handleToggleCollapse}
           className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-200 rounded transition-colors"
           title="Expandir painel"
+          aria-label="Expandir painel"
         >
           ▶
         </button>
@@ -187,6 +251,7 @@ export default function TopologySidebar({
               onClick={() => {
                 setActiveTab(tab.id);
                 setIsCollapsed(false);
+                onToggle?.(true);
               }}
               className={`p-2 rounded transition-colors ${
                 activeTab === tab.id
@@ -194,6 +259,7 @@ export default function TopologySidebar({
                   : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200'
               }`}
               title={tab.label}
+              aria-label={tab.label}
             >
               {tab.icon}
             </button>
@@ -209,6 +275,7 @@ export default function TopologySidebar({
         'h-full w-full max-w-[400px] bg-slate-50 border-l border-slate-200 flex flex-col shadow-lg',
         className || '',
       ].join(' ')}
+      aria-label="Painel lateral de topologia"
     >
       {/* Header */}
       <div className="px-4 py-3 border-b border-slate-200 bg-white">
@@ -219,6 +286,7 @@ export default function TopologySidebar({
               onClick={handleToggleCollapse}
               className="p-1 text-slate-400 hover:text-slate-600 rounded transition-colors"
               title="Recolher painel"
+              aria-label="Recolher painel"
             >
               ◀
             </button>
@@ -226,6 +294,7 @@ export default function TopologySidebar({
           <ActiveFiltersBadge />
         </div>
 
+        {/* Estatísticas rápidas */}
         <div className="grid grid-cols-3 gap-4 text-xs">
           <div className="text-center">
             <div className="font-semibold text-slate-900">{stats.totalNodes}</div>
@@ -245,23 +314,29 @@ export default function TopologySidebar({
       </div>
 
       {/* Tabs */}
-      <div className="border-b border-slate-200 bg-white">
+      <div className="border-b border-slate-200 bg-white" role="tablist" aria-label="Navegação do painel" ref={tabsRef}>
         <div className="flex">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex-1 flex items-center justify-center py-2 text-xs font-medium transition-colors ${
-                activeTab === tab.id
-                  ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
-              }`}
-            >
-              <span className="mr-1">{tab.icon}</span>
-              {tab.label}
-              {tab.badge}
-            </button>
-          ))}
+          {tabs.map((tab) => {
+            const selected = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                role="tab"
+                aria-selected={selected}
+                onClick={() => setActiveTab(tab.id)}
+                className={[
+                  'flex-1 flex items-center justify-center py-2 text-xs font-medium transition-colors outline-none',
+                  selected
+                    ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50',
+                ].join(' ')}
+              >
+                <span className="mr-1">{tab.icon}</span>
+                {tab.label}
+                {tab.badge}
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -310,7 +385,9 @@ export default function TopologySidebar({
             </div>
           )}
 
-          {activeTab === 'alerts' && showAlertsSection && <AlertsSection alertsApi={alertsApi} />}
+          {activeTab === 'alerts' && showAlertsSection && (
+            <AlertsSection alertsApi={alertsApi} />
+          )}
 
           {activeTab === 'problems' && showProblemsSection && (
             <ProblemsSection
@@ -330,9 +407,11 @@ export default function TopologySidebar({
   );
 }
 
-// -------------------- Seção de Alertas --------------------
+/** ======================
+ *  Seção: Alertas
+ * ====================== */
 
-function AlertsSection({ alertsApi }: { alertsApi?: AlertsApi }) {
+function AlertsSection({ alertsApi }: { alertsApi: AlertsApi }) {
   if (!alertsApi) {
     return (
       <div className="p-4 text-center">
@@ -341,20 +420,24 @@ function AlertsSection({ alertsApi }: { alertsApi?: AlertsApi }) {
     );
   }
 
-  const { alerts, criticalAlerts, clearAlerts } = alertsApi;
+  const { alerts, criticalAlerts, clearAlerts, status, connected } = alertsApi;
 
-  if (alerts.length === 0) {
+  if ((alerts?.length ?? 0) === 0) {
     return (
-      <div className="p-4 text-center">
+      <div className="p-6 text-center">
         <div className="text-slate-400 text-sm">Nenhum alerta no momento</div>
-        <div className="text-slate-400 text-xs mt-1">Tudo operando normalmente</div>
+        <div className="text-slate-400 text-xs mt-1">
+          {connected ? 'Tudo operando normalmente' : `Status: ${status}`}
+        </div>
       </div>
     );
   }
 
+  const nonCritical = alerts.filter((a) => !criticalAlerts.some((c) => c.id === a.id));
+
   return (
     <div className="p-3 space-y-2">
-      <div className="mb-2 flex items-center justify-between">
+      <div className="flex items-center justify-between mb-2">
         <div className="text-sm font-medium text-slate-900">Alertas ({alerts.length})</div>
         {clearAlerts && (
           <button onClick={clearAlerts} className="text-xs text-slate-500 hover:text-slate-700 underline">
@@ -367,11 +450,9 @@ function AlertsSection({ alertsApi }: { alertsApi?: AlertsApi }) {
         {criticalAlerts.map((alert) => (
           <AlertItem key={alert.id} alert={alert} level="critical" />
         ))}
-        {alerts
-          .filter((alert) => !criticalAlerts.some((ca) => ca.id === alert.id))
-          .map((alert) => (
-            <AlertItem key={alert.id} alert={alert} level={alert.level as 'critical' | 'warn' | 'info'} />
-          ))}
+        {nonCritical.map((alert) => (
+          <AlertItem key={alert.id} alert={alert} level={alert.level ?? 'info'} />
+        ))}
       </div>
     </div>
   );
@@ -384,15 +465,15 @@ function AlertItem({ alert, level }: { alert: any; level: 'critical' | 'warn' | 
     info: { color: 'bg-blue-100 border-blue-300', text: 'text-blue-800', icon: '🔵' },
   } as const;
 
-  const config = levelConfig[level];
+  const cfg = levelConfig[level];
 
   return (
-    <div className={`p-3 rounded-lg border ${config.color} ${config.text}`}>
+    <div className={`p-3 rounded-lg border ${cfg.color} ${cfg.text}`}>
       <div className="flex items-start gap-2">
-        <span className="text-sm">{config.icon}</span>
-        <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium">{alert.message}</div>
-          <div className="mt-1 text-xs opacity-80">
+        <span className="text-sm">{cfg.icon}</span>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium break-words">{alert.message}</div>
+          <div className="text-xs opacity-80 mt-1">
             {alert.host && `Host: ${alert.host} • `}
             {new Date(alert.createdAt).toLocaleString()}
           </div>
@@ -402,7 +483,9 @@ function AlertItem({ alert, level }: { alert: any; level: 'critical' | 'warn' | 
   );
 }
 
-// -------------------- Seção de Problemas --------------------
+/** ======================
+ *  Seção: Problemas
+ * ====================== */
 
 function ProblemsSection({
   problemNodes,
@@ -419,7 +502,7 @@ function ProblemsSection({
 
   if (totalProblems === 0) {
     return (
-      <div className="p-4 text-center">
+      <div className="p-6 text-center">
         <div className="text-green-600 text-sm">✅ Sem problemas detectados</div>
         <div className="text-slate-400 text-xs mt-1">Toda a infraestrutura está operacional</div>
       </div>
@@ -430,26 +513,26 @@ function ProblemsSection({
     <div className="p-3 space-y-3">
       {/* Resumo */}
       <div className="grid grid-cols-2 gap-4 text-center">
-        <div className="rounded-lg bg-red-50 p-2">
-          <div className="font-semibold text-red-700">{problemNodes.length}</div>
-          <div className="text-xs text-red-600">Nós com problema</div>
+        <div className="p-2 bg-red-50 rounded-lg">
+          <div className="text-red-700 font-semibold">{problemNodes.length}</div>
+          <div className="text-red-600 text-xs">Nós com problema</div>
         </div>
-        <div className="rounded-lg bg-yellow-50 p-2">
-          <div className="font-semibold text-yellow-700">{problemLinks.length}</div>
-          <div className="text-xs text-yellow-600">Links com problema</div>
+        <div className="p-2 bg-yellow-50 rounded-lg">
+          <div className="text-yellow-700 font-semibold">{problemLinks.length}</div>
+          <div className="text-yellow-600 text-xs">Links com problema</div>
         </div>
       </div>
 
       {/* Nós com problemas */}
       {problemNodes.length > 0 && (
         <div>
-          <div className="mb-2 text-sm font-medium text-slate-900">Nós com problemas</div>
+          <div className="text-sm font-medium text-slate-900 mb-2">Nós com problemas</div>
           <div className="space-y-2">
-            {problemNodes.slice(0, 10).map((node) => (
-              <ProblemItem key={node.id} type="node" item={node} onFocus={() => onFocusNode?.(node.id)} />
+            {problemNodes.slice(0, 10).map((n) => (
+              <ProblemItem key={n.id} type="node" item={n} onFocus={() => onFocusNode?.(n.id)} />
             ))}
             {problemNodes.length > 10 && (
-              <div className="text-center text-xs text-slate-500">+{problemNodes.length - 10} nós com problemas</div>
+              <div className="text-xs text-slate-500 text-center">+{problemNodes.length - 10} nós com problemas</div>
             )}
           </div>
         </div>
@@ -458,13 +541,15 @@ function ProblemsSection({
       {/* Links com problemas */}
       {problemLinks.length > 0 && (
         <div>
-          <div className="mb-2 text-sm font-medium text-slate-900">Links com problemas</div>
+          <div className="text-sm font-medium text-slate-900 mb-2">Links com problemas</div>
           <div className="space-y-2">
-            {problemLinks.slice(0, 10).map((link) => (
-              <ProblemItem key={link.id} type="link" item={link} onFocus={() => onFocusLink?.(link.id)} />
+            {problemLinks.slice(0, 10).map((l) => (
+              <ProblemItem key={l.id} type="link" item={l} onFocus={() => onFocusLink?.(l.id)} />
             ))}
             {problemLinks.length > 10 && (
-              <div className="text-center text-xs text-slate-500">+{problemLinks.length - 10} links com problemas</div>
+              <div className="text-xs text-slate-500 text-center">
+                +{problemLinks.length - 10} links com problemas
+              </div>
             )}
           </div>
         </div>
@@ -487,10 +572,10 @@ function ProblemItem({
   const link = !isNode ? (item as TopologyLink) : null;
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-2 transition-colors hover:border-slate-300">
+    <div className="p-2 bg-white border border-slate-200 rounded-lg hover:border-slate-300 transition-colors">
       <div className="flex items-center justify-between">
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium text-slate-900">
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium text-slate-900 truncate">
             {isNode ? node!.name || node!.id : `Link: ${link!.id}`}
           </div>
           <div className="text-xs text-slate-500">
@@ -499,8 +584,9 @@ function ProblemItem({
         </div>
         <button
           onClick={onFocus}
-          className="ml-2 rounded border border-slate-300 bg-white px-2 py-1 text-xs transition-colors hover:bg-slate-50"
+          className="ml-2 px-2 py-1 text-xs rounded border border-slate-300 bg-white hover:bg-slate-50 transition-colors"
           title="Focar no mapa"
+          aria-label="Focar no mapa"
         >
           👁️
         </button>
@@ -509,7 +595,9 @@ function ProblemItem({
   );
 }
 
-// -------------------- Detalhes selecionados --------------------
+/** ======================
+ *  Seção: Detalhes
+ * ====================== */
 
 function SelectedDetails({
   node,
@@ -526,8 +614,8 @@ function SelectedDetails({
     return (
       <div className="p-6 text-center">
         <div className="text-slate-400 text-sm">Nenhum item selecionado</div>
-        <div className="mt-2 text-xs text-slate-400">Clique em um nó ou link no mapa para ver detalhes</div>
-        <div className="mt-4 text-4xl text-slate-300">🎯</div>
+        <div className="text-slate-400 text-xs mt-2">Clique em um nó ou link no mapa para ver detalhes</div>
+        <div className="mt-4 text-slate-300 text-4xl">🎯</div>
       </div>
     );
   }
@@ -535,130 +623,18 @@ function SelectedDetails({
   return (
     <div className="divide-y divide-slate-200">
       {node && <NodeInfoCard node={node} onFocusNode={onFocusNode} />}
-      {link && <LinkInfoCard link={link} onFocusLink={onFocusLink} />}
+      {link && <LinkInfoCard link={link} onFocusLink={onFocusLink} onFocusNode={onFocusNode} />}
     </div>
   );
 }
 
-/**
- * Implementações simples para NodeInfoCard e LinkInfoCard.
- * Se você já tem componentes prontos no projeto, substitua por imports.
- */
-function ProgressBar({ value = 0, label }: { value?: number; label?: string }) {
-  const pct = Math.max(0, Math.min(100, Math.round(value)));
-  return (
-    <div className="w-full">
-      {label && <div className="mb-1 text-xs text-slate-600">{label}</div>}
-      <div className="h-2 w-full rounded bg-slate-200">
-        <div className="h-2 rounded bg-blue-500" style={{ width: `${pct}%` }} />
-      </div>
-    </div>
-  );
-}
-
-function NodeInfoCard({ node, onFocusNode }: { node: TopologyNode; onFocusNode?: (id: string) => void }) {
-  const cpu = node.metrics?.cpu ?? undefined;
-  const mem = node.metrics?.memory ?? undefined;
-
-  return (
-    <div className="p-4 bg-white">
-      <div className="flex items-start justify-between">
-        <div>
-          <div className="text-sm font-semibold text-slate-900">{node.name || node.id}</div>
-          <div className="text-xs text-slate-500">
-            Status: <span className="font-medium">{node.status ?? 'unknown'}</span> • Tipo:{' '}
-            <span className="font-medium">{node.type ?? 'unknown'}</span>
-          </div>
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => onFocusNode?.(node.id)}
-            className="rounded border border-slate-300 bg-white px-2 py-1 text-xs hover:bg-slate-50"
-          >
-            Focar
-          </button>
-          <button
-            onClick={() => topologyActions.setSelectedNode(null)}
-            className="rounded border border-slate-300 bg-white px-2 py-1 text-xs hover:bg-slate-50"
-          >
-            Limpar
-          </button>
-        </div>
-      </div>
-
-      <div className="mt-3 space-y-2">
-        {typeof cpu === 'number' && <ProgressBar value={cpu} label="CPU" />}
-        {typeof mem === 'number' && <ProgressBar value={mem} label="Memória" />}
-      </div>
-
-      {node.tags && node.tags.length > 0 && (
-        <div className="mt-3">
-          <div className="text-xs font-medium text-slate-700">Tags</div>
-          <div className="mt-1 flex flex-wrap gap-1">
-            {node.tags.map((t) => (
-              <span key={t} className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-700">
-                {t}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function LinkInfoCard({ link, onFocusLink }: { link: TopologyLink; onFocusLink?: (id: string) => void }) {
-  const utilizationPct = typeof link.utilization === 'number' ? Math.round(link.utilization * 100) : undefined;
-
-  return (
-    <div className="p-4 bg-white">
-      <div className="flex items-start justify-between">
-        <div>
-          <div className="text-sm font-semibold text-slate-900">Link: {link.id}</div>
-          <div className="text-xs text-slate-500">
-            {link.source} → {link.target} • Status:{' '}
-            <span className="font-medium">{link.status ?? 'unknown'}</span>
-          </div>
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => onFocusLink?.(link.id)}
-            className="rounded border border-slate-300 bg-white px-2 py-1 text-xs hover:bg-slate-50"
-          >
-            Focar
-          </button>
-          <button
-            onClick={() => topologyActions.setSelectedLink(null)}
-            className="rounded border border-slate-300 bg-white px-2 py-1 text-xs hover:bg-slate-50"
-          >
-            Limpar
-          </button>
-        </div>
-      </div>
-
-      <div className="mt-3 space-y-2">
-        {typeof utilizationPct === 'number' && <ProgressBar value={utilizationPct} label="Utilização" />}
-        {typeof link.latency === 'number' && (
-          <div className="text-xs text-slate-600">
-            Latência: <span className="font-medium">{link.latency} ms</span>
-          </div>
-        )}
-        {typeof link.packetLoss === 'number' && (
-          <div className="text-xs text-slate-600">
-            Perda: <span className="font-medium">{Math.round(link.packetLoss * 100)}%</span>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// -------------------- Hook para controle do sidebar --------------------
+/** ======================
+ *  Hook utilitário opcional
+ * ====================== */
 
 export function useTopologySidebar() {
   const [isExpanded, setIsExpanded] = useState(true);
-
-  const toggle = useCallback(() => setIsExpanded((prev) => !prev), []);
+  const toggle = useCallback(() => setIsExpanded((p) => !p), []);
   const expand = useCallback(() => setIsExpanded(true), []);
   const collapse = useCallback(() => setIsExpanded(false), []);
 
