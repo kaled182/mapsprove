@@ -1,110 +1,49 @@
 // frontend/src/routes/Protected.tsx
 // =======================================================
-// 🛡️ Protected (v1.2)
-// - Proteção de rotas (React Router v6+)
-// - Validação assíncrona com cache opcional
-// - Suporte a roles e permissions
-// - Redireciono com parâmetros e fallbacks customizáveis
+// 🛡️ Protected Route (v1.3)
+// - Tipagem robusta (roles, permissions, user, expiresAt)
+// - Validação opcional assíncrona com cache
+// - Redireciono elegante com preservação de origem
+// - Fallbacks personalizáveis e helpers exportados
 // =======================================================
 
-import React, {
-  useEffect,
-  useMemo,
-  useState,
-  useCallback,
-} from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { authedFetch } from '../lib/authedFetch';
 
-// ---------- Types ----------
+// ---------- Tipos ----------
 export type AuthCheckResult = {
   ok: boolean;
   roles?: string[];
-  user?: any;          // dados do usuário retornados pela API
-  expiresAt?: number;  // timestamp de expiração opcional
+  user?: any;
+  expiresAt?: number;
 };
 
 export type ValidateFn = (token: string | null) => Promise<AuthCheckResult>;
 
 export type ProtectedProps = {
   children: React.ReactNode;
-  /** Exigir autenticação? (default: true) */
-  requireAuth?: boolean;
-  /** Caminho de redirecionamento quando não autorizado (default: "/login") */
-  redirectTo?: string;
-  /** Parâmetros adicionais para o redirecionamento */
+  requireAuth?: boolean;               // default: true
+  redirectTo?: string;                 // default: "/login"
   redirectParams?: Record<string, string>;
-  /** Papéis obrigatórios para acessar a rota (ex: ['admin']) */
   requiredRoles?: string[];
-  /** Permissões específicas (mais granular que roles) */
   requiredPermissions?: string[];
-  /** Componente exibido enquanto valida (default: spinner simples) */
   fallback?: React.ReactNode;
-  /** Componente para exibir quando não autorizado (opcional) */
   unauthorizedFallback?: React.ReactNode;
-  /** Validação assíncrona opcional */
   validate?: ValidateFn;
-  /** Função para obter o token */
-  getToken?: () => string | null;
-  /** Cache da validação em ms (default: 0 - sem cache) */
-  validationCacheMs?: number;
-  /** Callback quando a validação falha */
+  getToken?: () => string | null;      // default: localStorage.getItem('token')
+  validationCacheMs?: number;          // default: 0 (sem cache)
   onValidationFail?: (error: any) => void;
 };
 
-// ---------- Validation cache (módulo) ----------
+// ---------- Cache de validação (memória) ----------
 const validationCache = new Map<string, { result: AuthCheckResult; timestamp: number }>();
-
-// ---------- UI Fallbacks ----------
-const DefaultFallback = () => (
-  <div className="w-full h-full min-h-[200px] grid place-items-center p-8">
-    <div className="flex flex-col items-center gap-3">
-      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-      <span className="text-sm text-gray-600">Verificando acesso...</span>
-    </div>
-  </div>
-);
-
-const DefaultUnauthorizedFallback = ({ redirectTo }: { redirectTo: string }) => (
-  <div className="w-full h-full min-h-[200px] grid place-items-center p-8">
-    <div className="text-center">
-      <div className="text-lg font-medium text-gray-900 mb-2">Acesso não autorizado</div>
-      <p className="text-gray-600">Você não tem permissão para acessar esta página.</p>
-      {/* Nota: usamos <Navigate/> para redirecionar imediatamente */}
-      <Navigate to={redirectTo} replace />
-    </div>
-  </div>
-);
-
-// ---------- Helpers ----------
-function hasAllRoles(userRoles: string[] | undefined, required: string[] | undefined): boolean {
-  if (!required || required.length === 0) return true;
-  if (!userRoles || userRoles.length === 0) return false;
-
-  const userRolesLower = userRoles.map((r) => r.toLowerCase());
-  const requiredLower = required.map((r) => r.toLowerCase());
-
-  return requiredLower.every((role) => userRolesLower.includes(role));
-}
-
-function hasAnyPermission(
-  userPermissions: string[] | undefined,
-  required: string[] | undefined
-): boolean {
-  if (!required || required.length === 0) return true;
-  if (!userPermissions || userPermissions.length === 0) return false;
-
-  const userPermsLower = userPermissions.map((p) => p.toLowerCase());
-  const requiredLower = required.map((p) => p.toLowerCase());
-
-  return requiredLower.some((permission) => userPermsLower.includes(permission));
-}
 
 function useValidationCache() {
   const clearExpired = () => {
     const now = Date.now();
     for (const [key, entry] of validationCache.entries()) {
-      // expurgo defensivo genérico (5min) — o TTL efetivo é controlado por validationCacheMs
+      // expurgo defensivo a cada acesso (5 min padrão)
       if (now - entry.timestamp > 5 * 60 * 1000) {
         validationCache.delete(key);
       }
@@ -120,15 +59,50 @@ function useValidationCache() {
     validationCache.set(key, { result, timestamp: Date.now() });
   };
 
-  const clear = (key?: string) => {
-    if (key) validationCache.delete(key);
-    else validationCache.clear();
+  const clear = (pattern?: string) => {
+    if (!pattern) {
+      validationCache.clear();
+      return;
+    }
+    for (const k of [...validationCache.keys()]) {
+      if (k.includes(pattern)) validationCache.delete(k);
+    }
   };
 
   return { get, set, clear };
 }
 
-// ---------- Protected Component ----------
+// ---------- Fallbacks ----------
+const DefaultFallback = () => (
+  <div className="w-full h-full min-h-[200px] grid place-items-center p-8">
+    <div className="flex flex-col items-center gap-3">
+      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
+      <span className="text-sm text-gray-600">Verificando acesso...</span>
+    </div>
+  </div>
+);
+
+// ---------- Helpers de autorização ----------
+function hasAllRoles(userRoles: string[] | undefined, required: string[] | undefined): boolean {
+  if (!required || required.length === 0) return true;
+  if (!userRoles || userRoles.length === 0) return false;
+  const u = userRoles.map((r) => r.toLowerCase());
+  const req = required.map((r) => r.toLowerCase());
+  return req.every((r) => u.includes(r));
+}
+
+function hasAnyPermission(
+  userPermissions: string[] | undefined,
+  required: string[] | undefined
+): boolean {
+  if (!required || required.length === 0) return true;
+  if (!userPermissions || userPermissions.length === 0) return false;
+  const u = userPermissions.map((p) => p.toLowerCase());
+  const req = required.map((p) => p.toLowerCase());
+  return req.some((p) => u.includes(p));
+}
+
+// ---------- Componente principal ----------
 export function Protected({
   children,
   requireAuth = true,
@@ -140,7 +114,11 @@ export function Protected({
   unauthorizedFallback,
   validate,
   getToken = () => {
-    try { return localStorage.getItem('token'); } catch { return null; }
+    try {
+      return localStorage.getItem('token');
+    } catch {
+      return null;
+    }
   },
   validationCacheMs = 0,
   onValidationFail,
@@ -149,60 +127,66 @@ export function Protected({
   const token = useMemo(() => getToken(), [getToken]);
   const { get: getCache, set: setCache } = useValidationCache();
 
-  const [checking, setChecking] = useState<boolean>(Boolean(validate));
-  const [validationResult, setValidationResult] = useState<AuthCheckResult | null>(null);
-  const [error, setError] = useState<any>(null);
-
-  // URL de redirecionamento com parâmetros
-  const buildRedirectUrl = useMemo(() => {
+  // construir URL de redirecionamento com origem preservada
+  const redirectUrl = useMemo(() => {
     const url = new URL(redirectTo, window.location.origin);
-    const defaultParams = {
-      from: location.pathname + location.search,
-      ...redirectParams,
-    };
-    Object.entries(defaultParams).forEach(([k, v]) => url.searchParams.set(k, String(v)));
+    const defaultParams = { from: location.pathname + location.search, ...redirectParams };
+    Object.entries(defaultParams).forEach(([k, v]) => url.searchParams.set(k, v));
     return url.pathname + url.search;
   }, [redirectTo, location, redirectParams]);
 
-  // 1) Se exige auth e não há token -> redireciona já
+  // regra 1: se precisa de auth e não há token → vai pro login
   const hasToken = Boolean(token);
   if (requireAuth && !hasToken) {
-    return <Navigate to={buildRedirectUrl} replace />;
+    return <Navigate to={redirectUrl} replace />;
   }
 
-  // 2) Validação assíncrona opcional (com cache)
+  // estado de validação/remoto
+  const [checking, setChecking] = useState<boolean>(Boolean(validate));
+  const [validationResult, setValidationResult] = useState<AuthCheckResult | null>(null);
+
+  // regra 2: se há validate, executar (com cache opcional)
   useEffect(() => {
     let cancelled = false;
 
-    const performValidation = async () => {
+    const run = async () => {
       if (!validate) {
         setChecking(false);
         return;
       }
-
       try {
         setChecking(true);
-        setError(null);
 
-        const cacheKey = `validate-${token}-${JSON.stringify(requiredRoles)}-${JSON.stringify(requiredPermissions)}`;
-        const cached = validationCacheMs > 0 ? getCache(cacheKey) : null;
+        const cacheKey =
+          validationCacheMs > 0
+            ? `validate:${JSON.stringify({
+                token: token ? 'present' : 'absent',
+                roles: requiredRoles ?? [],
+                perms: requiredPermissions ?? [],
+              })}`
+            : '';
 
-        if (cached && (Date.now() - cached.timestamp) < validationCacheMs) {
-          if (!cancelled) {
-            setValidationResult(cached.result);
-            setChecking(false);
+        if (cacheKey) {
+          const cached = getCache(cacheKey);
+          if (cached && Date.now() - cached.timestamp < validationCacheMs) {
+            if (!cancelled) {
+              setValidationResult(cached.result);
+              setChecking(false);
+            }
+            return;
           }
-          return;
         }
 
         const result = await validate(token);
+
         if (!cancelled) {
           setValidationResult(result);
-          if (validationCacheMs > 0) setCache(cacheKey, result);
+          if (validationCacheMs > 0 && cacheKey) {
+            setCache(cacheKey, result);
+          }
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err);
           onValidationFail?.(err);
           setValidationResult({ ok: false });
         }
@@ -211,74 +195,64 @@ export function Protected({
       }
     };
 
-    performValidation();
-    return () => { cancelled = true; };
-  }, [validate, token, validationCacheMs, requiredRoles, requiredPermissions, onValidationFail, getCache, setCache]);
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [validate, token, validationCacheMs, requiredRoles, requiredPermissions, getCache, setCache, onValidationFail]);
 
-  // 3) Enquanto valida
+  // enquanto valida
   if (checking) {
     return <>{fallback ?? <DefaultFallback />}</>;
   }
 
-  // 4) Determinar autorização
+  // regra 3: decisão final de autorização
   const isAuthorized = useMemo(() => {
-    if (!requireAuth) return true;
+    if (!requireAuth) return true; // rota pública
+    if (!validate) {
+      // sem validação remota: apenas checa token e roles passadas
+      return hasToken && hasAllRoles(undefined, requiredRoles);
+    }
+    if (!validationResult?.ok) return false;
 
-    // Se há validação, use o resultado
-    if (validate && validationResult) {
-      if (!validationResult.ok) return false;
+    if (!hasAllRoles(validationResult.roles, requiredRoles)) return false;
 
-      // roles
-      if (!hasAllRoles(validationResult.roles, requiredRoles)) return false;
-
-      // permissions
-      if (requiredPermissions && requiredPermissions.length > 0) {
-        const perms = validationResult.user?.permissions as string[] | undefined;
-        if (!hasAnyPermission(perms, requiredPermissions)) return false;
-      }
-
-      return true;
+    if (requiredPermissions && requiredPermissions.length > 0) {
+      // tenta extrair permissões do usuário retornado
+      const perms = Array.isArray(validationResult.user?.permissions)
+        ? (validationResult.user.permissions as string[])
+        : undefined;
+      if (!hasAnyPermission(perms, requiredPermissions)) return false;
     }
 
-    // Se não há validação, exige token e (opcionalmente) roles do cache/estado
-    return hasToken && hasAllRoles(validationResult?.roles, requiredRoles);
+    // opcional: considerar expiresAt
+    if (validationResult.expiresAt && Date.now() > validationResult.expiresAt) return false;
+
+    return true;
   }, [requireAuth, validate, validationResult, requiredRoles, requiredPermissions, hasToken]);
 
-  // 5) Redireciona ou exibe fallback de não autorizado
   if (!isAuthorized) {
-    if (unauthorizedFallback) return <>{unauthorizedFallback}</>;
-    return <DefaultUnauthorizedFallback redirectTo={buildRedirectUrl} />;
+    return unauthorizedFallback ? <>{unauthorizedFallback}</> : <Navigate to={redirectUrl} replace />;
   }
 
-  // 6) Acesso liberado
   return <>{children}</>;
 }
 
-export default Protected;
+// ---------- Helpers exportados ----------
 
-// ---------- Helpers públicos ----------
-
-/**
- * Cria um validador usando authedFetch.
- * Adapte o mapeamento conforme o shape da sua API.
- */
+/** Cria um validador baseado em authedFetch num endpoint (ex.: /api/auth/me) */
 export function createAuthValidator(
   endpoint: string,
-  options: {
-    method?: string;
-    onError?: (error: any) => void;
-  } = {}
+  options: { method?: 'GET' | 'POST'; onError?: (error: any) => void } = {}
 ): ValidateFn {
   return async (token: string | null) => {
     try {
       if (!token) return { ok: false };
 
       const res = await authedFetch(endpoint, {
-        method: options.method || 'GET',
+        method: options.method ?? 'GET',
         auth: true,
         parseJson: true,
-        // Você pode incluir cacheMs aqui se o endpoint permitir (ex.: 10s)
-        // cacheMs: 10_000,
       });
 
       return {
@@ -290,78 +264,96 @@ export function createAuthValidator(
     } catch (error: any) {
       options.onError?.(error);
       if (error?.status === 401 || error?.status === 403) return { ok: false };
-      // Em caso de erro de rede, escolha a política que preferir. Aqui, invalidamos.
+      // erro de rede/servidor — comportamento conservador: negar acesso
       return { ok: false };
     }
   };
 }
 
-/** Validador simples que apenas checa existência de token */
-export const tokenOnlyValidator: ValidateFn = async (token: string | null) => ({
-  ok: Boolean(token),
-});
+/** Validador mínimo: apenas exige presença de token */
+export const tokenOnlyValidator: ValidateFn = async (token) => ({ ok: Boolean(token) });
 
-/**
- * Hook para limpar/invadidar o cache de validação
- */
+/** Hook utilitário para invalidar o cache de validação quando necessário */
 export function useValidationCacheManager() {
-  const invalidateAuthCache = useCallback((pattern?: string) => {
-    if (pattern) {
-      for (const key of Array.from(validationCache.keys())) {
-        if (key.includes(pattern)) validationCache.delete(key);
-      }
-    } else {
-      validationCache.clear();
-    }
-  }, []);
-
+  const { clear } = useValidationCache();
+  const invalidateAuthCache = useCallback((pattern?: string) => clear(pattern), [clear]);
   return { invalidateAuthCache };
 }
 
-/**
- * Hook básico para reaproveitar a lógica fora do roteamento.
- * (Mantém a assinatura simples; personalize conforme seu caso.)
- */
-export function useAuthGuard(options: {
+/** Hook leve para proteger blocos dentro de um componente (opcional) */
+export function useAuthGuard(opts: {
   requireAuth?: boolean;
   requiredRoles?: string[];
   requiredPermissions?: string[];
   validate?: ValidateFn;
 }) {
   const [authorized, setAuthorized] = useState<boolean | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState<boolean>(true);
   const token = useMemo(() => {
-    try { return localStorage.getItem('token'); } catch { return null; }
+    try {
+      return localStorage.getItem('token');
+    } catch {
+      return null;
+    }
   }, []);
 
   useEffect(() => {
     let cancelled = false;
+
     const run = async () => {
+      const needAuth = opts.requireAuth ?? true;
+      if (!needAuth) {
+        if (!cancelled) {
+          setAuthorized(true);
+          setLoading(false);
+        }
+        return;
+      }
+
+      if (!token) {
+        if (!cancelled) {
+          setAuthorized(false);
+          setLoading(false);
+        }
+        return;
+      }
+
+      if (!opts.validate) {
+        // sem validação remota: apenas token presente
+        if (!cancelled) {
+          setAuthorized(true);
+          setLoading(false);
+        }
+        return;
+      }
+
       try {
-        setLoading(true);
-        const okToken = options.requireAuth !== false ? Boolean(token) : true;
-        if (!okToken) {
-          if (!cancelled) setAuthorized(false);
-          return;
+        const result = await opts.validate(token);
+        if (!cancelled) {
+          let ok = result.ok;
+          if (ok && opts.requiredRoles?.length) {
+            ok = hasAllRoles(result.roles, opts.requiredRoles);
+          }
+          if (ok && opts.requiredPermissions?.length) {
+            const perms = Array.isArray(result.user?.permissions)
+              ? (result.user.permissions as string[])
+              : undefined;
+            ok = hasAnyPermission(perms, opts.requiredPermissions);
+          }
+          setAuthorized(ok);
         }
-        if (options.validate) {
-          const res = await options.validate(token);
-          if (!cancelled) setAuthorized(
-            res.ok &&
-            hasAllRoles(res.roles, options.requiredRoles) &&
-            (!options.requiredPermissions ||
-              hasAnyPermission(res.user?.permissions, options.requiredPermissions))
-          );
-        } else {
-          if (!cancelled) setAuthorized(true);
-        }
+      } catch {
+        if (!cancelled) setAuthorized(false);
       } finally {
         if (!cancelled) setLoading(false);
       }
     };
+
     run();
-    return () => { cancelled = true; };
-  }, [token, options]);
+    return () => {
+      cancelled = true;
+    };
+  }, [opts.requireAuth, opts.requiredRoles, opts.requiredPermissions, opts.validate, token]);
 
   return { authorized, loading };
 }
