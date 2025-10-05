@@ -1,802 +1,989 @@
 // frontend/src/hooks/useStatusStream.ts
-// =======================================================
-// 📡 useStatusStream (v1.1)
-// Camada acima do useWebSocket para normalizar eventos:
-// - snmp_metrics      → metricsByHost (com TTL opcional)
-// - alert             → alerts (ring buffer + acknowledge/remove)
-// - topology_update   → topology (Maps para acesso O(1) + arrays cacheados)
-// - system_status     → health geral do backend/worker
-// - command_response  → callbacks por commandId com timeout
-// Também expõe helpers para enviar comandos via WS.
-// =======================================================
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { TopologyLink, TopologyNode } from '@/store/topology';
 
-import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
-import {
-  useWebSocket,
-  usePersistentWebSocket,
-  type UseWebSocketOptions,
-  type UseWebSocketReturn,
-} from './useWebSocket';
+/** =========================
+ *  Tipos públicos
+ *  ========================= */
 
-// -------------------- Tipos de mensagens estendidos --------------------
+export type AlertLevel = 'critical' | 'warn' | 'info';
 
-export type WireSnmpMetrics = {
-  type: 'snmp_metrics';
-  host: string;
-  cpu?: number;
-  mem?: number;
-  disks?: Array<{ mount: string; usage: number }>;
-  interfaces?: Array<{
-    name: string;
-    status: 'up' | 'down' | 'unknown';
-    inBytes: number;
-    outBytes: number;
-    errors?: number;
-  }>;
-  ts?: number;
-  ttl?: number; // Time-to-live em ms
-};
-
-export type WireAlert = {
-  type: 'alert';
-  id?: string;
-  level: 'info' | 'warn' | 'critical';
-  message: string;
-  source?: string;
-  host?: string;
-  ts?: number;
-  extra?: Record<string, any>;
-  acknowledged?: boolean;
-  autoClear?: boolean;
-  category?: string;
-};
-
-export type WireTopologyUpdate = {
-  type: 'topology_update';
+export type TopologyPayload = {
   version?: string | number;
-  timestamp?: number;
-  nodes?: Array<{
-    id: string;
-    name?: string;
-    lat?: number;
-    lon?: number;
-    status?: 'up' | 'down' | 'degraded';
-    type?: 'router' | 'switch' | 'server' | 'firewall' | 'unknown';
-    meta?: Record<string, any>;
-  }>;
-  links?: Array<{
-    id: string;
-    source: string;
-    target: string;
-    fiber?: boolean;
-    distanceKm?: number;
-    status?: 'up' | 'down' | 'degraded';
-    bandwidth?: number;
-    utilization?: number;
-    meta?: Record<string, any>;
-  }>;
-  diff?: {
-    added?: { nodes: string[]; links: string[] };
-    removed?: { nodes: string[]; links: string[] };
-    updated?: { nodes: string[]; links: string[] };
-  };
-};
-
-export type WirePong = {
-  type: 'pong';
-  id?: string;
-  timestamp?: number;
-  latency?: number;
-};
-
-export type WireSystemStatus = {
-  type: 'system_status';
-  uptime?: number;
-  memoryUsage?: number;
-  activeConnections?: number;
-  queueSize?: number;
-  ts?: number;
-};
-
-export type WireCommandResponse = {
-  type: 'command_response';
-  commandId?: string;
-  success: boolean;
-  message?: string;
-  data?: any;
-  ts?: number;
-};
-
-export type WireEvent =
-  | WireSnmpMetrics
-  | WireAlert
-  | WireTopologyUpdate
-  | WirePong
-  | WireSystemStatus
-  | WireCommandResponse
-  | Record<string, any>;
-
-// -------------------- Tipos normalizados --------------------
-
-export type TopologyNode = {
-  id: string;
-  name?: string;
-  lat?: number;
-  lon?: number;
-  status?: 'up' | 'down' | 'degraded';
-  type?: 'router' | 'switch' | 'server' | 'firewall' | 'unknown';
-  meta?: Record<string, any>;
-  lastSeen?: number;
-};
-
-export type TopologyLink = {
-  id: string;
-  source: string;
-  target: string;
-  fiber?: boolean;
-  distanceKm?: number;
-  status?: 'up' | 'down' | 'degraded';
-  bandwidth?: number;
-  utilization?: number;
-  meta?: Record<string, any>;
-  lastSeen?: number;
-};
-
-export type HostMetrics = {
-  host: string;
-  cpu?: number;
-  mem?: number;
-  disks?: Array<{ mount: string; usage: number }>;
-  interfaces?: Array<{
-    name: string;
-    status: 'up' | 'down' | 'unknown';
-    inBytes: number;
-    outBytes: number;
-    errors?: number;
-  }>;
-  updatedAt: number;
-  expiresAt?: number; // Para TTL
-  isStale?: boolean;
-};
-
-export type NormalizedAlert = {
-  id: string;
-  level: 'info' | 'warn' | 'critical';
-  message: string;
-  source?: string;
-  host?: string;
-  createdAt: number;
-  acknowledged: boolean;
-  autoClear: boolean;
-  category?: string;
-  extra?: Record<string, any>;
-  isNew?: boolean;
-};
-
-export type NormalizedTopology = {
-  version?: string | number;
-  updatedAt?: number;
-  nodes: Map<string, TopologyNode>;
-  links: Map<string, TopologyLink>;
   nodeArray: TopologyNode[];
   linkArray: TopologyLink[];
 };
 
-export type SystemStatus = {
-  uptime?: number;
-  memoryUsage?: number;
-  activeConnections?: number;
-  queueSize?: number;
-  updatedAt: number;
+export type MetricsPayload = {
+  host: string;
+  cpu?: number; // 0..100
+  mem?: number; // 0..100
+  disks?: Array<{ name?: string; usage?: number }>;
+  ts?: number | string;
+  [k: string]: unknown;
 };
 
-export type StatusStreamState = {
-  metricsByHost: Record<string, HostMetrics>;
-  alerts: NormalizedAlert[];
-  topology: NormalizedTopology;
-  systemStatus?: SystemStatus;
-  lastEvent?: WireEvent;
-  eventCount: number;
-  connectedAt?: number;
-  lastMetricsUpdate?: number;
+export type AlertEvent = {
+  id: string;
+  level: AlertLevel;
+  message: string;
+  createdAt: number; // epoch ms
+  host?: string;
+  meta?: Record<string, unknown>;
 };
 
-// -------------------- Actions --------------------
+export type StreamEvent =
+  | { type: 'topology'; data: TopologyPayload }
+  | { type: 'metrics'; data: MetricsPayload }
+  | { type: 'alert'; data: AlertEvent }
+  | { type: 'ping'; data?: unknown }
+  | { type: 'hello'; data?: unknown }
+  | { type: 'unknown'; raw: unknown };
 
-type StatusAction =
-  | { type: 'METRICS_UPSERT'; payload: HostMetrics }
-  | { type: 'METRICS_REMOVE_EXPIRED'; currentTime: number }
-  | { type: 'ALERT_PUSH'; payload: NormalizedAlert; max: number }
-  | { type: 'ALERT_ACKNOWLEDGE'; id: string }
-  | { type: 'ALERT_REMOVE'; id: string }
-  | { type: 'ALERT_CLEAR_ALL' }
-  | { type: 'ALERT_CLEAR_AUTO_CLEAR' }
-  | { type: 'TOPOLOGY_SET'; payload: NormalizedTopology }
-  | { type: 'TOPOLOGY_UPDATE_NODES'; nodes: TopologyNode[] }
-  | { type: 'TOPOLOGY_UPDATE_LINKS'; links: TopologyLink[] }
-  | { type: 'SYSTEM_STATUS_UPDATE'; payload: SystemStatus }
-  | { type: 'LAST_EVENT'; payload?: WireEvent }
-  | { type: 'CONNECTION_ESTABLISHED' }
-  | { type: 'RESET' };
+export type TransportKind = 'ws' | 'sse' | 'poll' | 'none';
 
-// -------------------- Helpers --------------------
+export type UseStatusStreamOptions = {
+  /** Endpoints de conexão. Ex.: ['wss://.../events', '/api/stream'] */
+  urls?: string[];
+  /** 'auto' tenta ws -> sse -> poll */
+  protocol?: 'auto' | 'ws' | 'sse' | 'poll';
+  /** Token (string ou função async) para Authorization: Bearer */
+  token?: string | (() => string | Promise<string>);
+  /** Envia credenciais (cookies) em SSE/poll */
+  withCredentials?: boolean;
 
-const now = () => Date.now();
+  /** Reconexão automática */
+  reconnect?: boolean;
+  /** [minMs, maxMs] para backoff exponencial com jitter */
+  reconnectBackoffMs?: [number, number];
+  /** Limite máximo de tentativas (por URL) */
+  maxRetries?: number;
 
-function clipRight<T>(arr: T[], max: number): T[] {
-  if (max <= 0) return [];
-  return arr.length > max ? arr.slice(arr.length - max) : arr;
-}
+  /** Callbacks de alto nível */
+  onTopology?: (t: TopologyPayload) => void;
+  onMetrics?: (m: MetricsPayload) => void;
+  onAlert?: (a: AlertEvent) => void;
+  onAny?: (e: StreamEvent) => void;
 
-function normalizeMetrics(msg: WireSnmpMetrics): HostMetrics {
-  const updatedAt = msg.ts && Number.isFinite(msg.ts) ? msg.ts : now();
-  const expiresAt = msg.ttl ? updatedAt + msg.ttl : undefined;
+  /** Mantém conexão ativa mesmo sem listeners */
+  persistent?: boolean;
 
+  /** Polling (fallback) – usado quando protocol='poll' ou como último recurso */
+  pollIntervalMs?: number;
+  /** URL de polling para snapshot/long-poll; se não informado tenta a 1ª URL com sufixo '/poll' */
+  pollUrl?: string;
+
+  /** Filtros opcionais */
+  filter?: {
+    alerts?: (a: AlertEvent) => boolean;
+  };
+};
+
+export type StreamError = {
+  type: 'auth' | 'network' | 'protocol' | 'server' | 'unknown';
+  message: string;
+  timestamp: number;
+  retryable: boolean;
+};
+
+export type UseStatusStreamState = {
+  connected: boolean;
+  status: 'idle' | 'connecting' | 'open' | 'closed' | 'error' | 'paused';
+  transport: TransportKind;
+  lastError?: Error;
+  lastErrorInfo?: StreamError;
+  stats: {
+    startedAt: number;
+    lastEventAt?: number;
+    messages: number;
+    reconnects: number;
+    retries: number;
+  };
+  /** Controle imperativo */
+  pause: () => void;
+  resume: () => void;
+  close: () => void;
+
+  /** Conveniências para alertas */
+  alerts: AlertEvent[];
+  criticalAlerts: AlertEvent[];
+  clearAlerts: () => void;
+
+  /** Health check on-demand */
+  healthCheck: () => Promise<boolean>;
+};
+
+/** =========================
+ *  Defaults/constantes
+ *  ========================= */
+
+const DEFAULTS: Required<
+  Pick<
+    UseStatusStreamOptions,
+    | 'protocol'
+    | 'reconnect'
+    | 'reconnectBackoffMs'
+    | 'maxRetries'
+    | 'pollIntervalMs'
+    | 'withCredentials'
+  >
+> = {
+  protocol: 'auto',
+  reconnect: true,
+  reconnectBackoffMs: [750, 15_000],
+  maxRetries: 12,
+  pollIntervalMs: 5_000,
+  withCredentials: false,
+};
+
+const ENV_DEFAULTS = getDefaultConfig();
+
+const TEXT_DECODER = typeof TextDecoder !== 'undefined' ? new TextDecoder() : undefined;
+
+const STORAGE_KEYS = {
+  ALERTS: 'stream-alerts-cache',
+  TOPOLOGY: 'stream-topology-cache',
+};
+
+/** =========================
+ *  Utilitários internos
+ *  ========================= */
+
+function getDefaultConfig(): Partial<UseStatusStreamOptions> {
+  const dev = typeof process !== 'undefined' && process.env?.NODE_ENV === 'development';
   return {
-    host: msg.host,
-    cpu: typeof msg.cpu === 'number' ? Math.max(0, Math.min(100, msg.cpu)) : undefined,
-    mem: typeof msg.mem === 'number' ? Math.max(0, Math.min(100, msg.mem)) : undefined,
-    disks: Array.isArray(msg.disks)
-      ? msg.disks.map((disk) => ({
-          ...disk,
-          usage: Math.max(0, Math.min(100, disk.usage)),
-        }))
-      : undefined,
-    interfaces: Array.isArray(msg.interfaces) ? msg.interfaces : undefined,
-    updatedAt,
-    expiresAt,
-    isStale: false,
+    reconnectBackoffMs: dev ? [1_000, 5_000] : [2_000, 30_000],
+    maxRetries: dev ? 3 : 12,
   };
 }
 
-function normalizeAlert(msg: WireAlert): NormalizedAlert {
-  const id = msg.id ?? `alert-${now()}-${Math.random().toString(36).slice(2, 9)}`;
+function isWebSocketUrl(url: string) {
+  return url.startsWith('ws://') || url.startsWith('wss://');
+}
+
+function toSseUrl(url: string) {
+  if (isWebSocketUrl(url)) {
+    // Converte ws(s)://host/path -> http(s)://host/path
+    return url.replace(/^ws/i, 'http');
+  }
+  return url;
+}
+
+function jitter(ms: number) {
+  // jitter ~ +/- 30%
+  const delta = ms * 0.3 * (Math.random() * 2 - 1);
+  return Math.max(250, Math.floor(ms + delta));
+}
+
+function expBackoff(attempt: number, [min, max]: [number, number]) {
+  const base = Math.min(max, min * Math.pow(2, attempt));
+  return jitter(base);
+}
+
+function parseJsonSafe(raw: unknown): any {
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return raw;
+    }
+  }
+  return raw;
+}
+
+function normalizeAlert(a: Partial<AlertEvent> & Record<string, any>): AlertEvent {
+  const level: AlertLevel =
+    (a.level as AlertLevel) ||
+    (a.severity === 'critical' ? 'critical' : a.severity === 'warn' ? 'warn' : 'info');
+
+  const id =
+    a.id ||
+    a.uuid ||
+    `${Date.now()}-${Math.random().toString(16).slice(2)}-${(a.message || 'alert').slice(0, 24)}`;
+
+  const createdAt =
+    typeof a.createdAt === 'number'
+      ? a.createdAt
+      : typeof a.ts === 'number'
+      ? a.ts
+      : Date.now();
 
   return {
     id,
-    level: msg.level ?? 'info',
-    message: msg.message ?? '',
-    source: msg.source,
-    host: msg.host,
-    createdAt: msg.ts && Number.isFinite(msg.ts) ? msg.ts : now(),
-    acknowledged: msg.acknowledged ?? false,
-    autoClear: msg.autoClear ?? false,
-    category: msg.category,
-    extra: msg.extra,
-    isNew: true,
+    level,
+    message: String(a.message ?? a.msg ?? 'Alerta'),
+    createdAt,
+    host: a.host,
+    meta: a.meta ?? a.data ?? {},
   };
 }
 
-function normalizeTopology(msg: WireTopologyUpdate): NormalizedTopology {
-  const nodes = new Map<string, TopologyNode>();
-  const links = new Map<string, TopologyLink>();
+function coerceStreamEvent(raw: any): StreamEvent {
+  const msg = parseJsonSafe(raw);
 
-  if (Array.isArray(msg.nodes)) {
-    msg.nodes.forEach((node) => {
-      nodes.set(node.id, {
-        ...node,
-        lastSeen: now(),
-      });
-    });
+  // Se já tiver type
+  if (msg?.type && typeof msg.type === 'string') {
+    const t = msg.type as StreamEvent['type'];
+    if (t === 'topology') return { type: 'topology', data: msg.data as TopologyPayload };
+    if (t === 'metrics') return { type: 'metrics', data: msg.data as MetricsPayload };
+    if (t === 'alert') return { type: 'alert', data: normalizeAlert(msg.data) };
+    if (t === 'ping' || t === 'hello') return { type: t, data: msg.data };
   }
 
-  if (Array.isArray(msg.links)) {
-    msg.links.forEach((link) => {
-      links.set(link.id, {
-        ...link,
-        lastSeen: now(),
-      });
-    });
+  // Inferir pelo shape
+  if (msg?.nodeArray && msg?.linkArray) {
+    return { type: 'topology', data: msg as TopologyPayload };
+  }
+  if (msg?.host || msg?.cpu || msg?.mem || msg?.disks) {
+    return { type: 'metrics', data: msg as MetricsPayload };
+  }
+  if (msg?.message && (msg?.level || msg?.severity)) {
+    return { type: 'alert', data: normalizeAlert(msg) };
+  }
+  if (msg === 'ping' || msg?.event === 'ping') {
+    return { type: 'ping', data: msg };
   }
 
-  return {
-    version: msg.version,
-    updatedAt: msg.timestamp ?? now(),
-    nodes,
-    links,
-    nodeArray: Array.from(nodes.values()),
-    linkArray: Array.from(links.values()),
+  return { type: 'unknown', raw: msg };
+}
+
+async function resolveToken(tokenOpt: UseStatusStreamOptions['token']): Promise<string | undefined> {
+  if (!tokenOpt) return undefined;
+  try {
+    return typeof tokenOpt === 'function' ? await tokenOpt() : tokenOpt;
+  } catch {
+    return undefined;
+  }
+}
+
+function classifyError(error: unknown, statusCode?: number): StreamError {
+  const message =
+    error instanceof Error ? error.message : typeof error === 'string' ? error : 'Unknown error';
+  const timestamp = Date.now();
+
+  if (typeof statusCode === 'number') {
+    if (statusCode === 401 || statusCode === 403) {
+      return { type: 'auth', message, timestamp, retryable: false };
+    }
+    if (statusCode >= 500) {
+      return { type: 'server', message, timestamp, retryable: true };
+    }
+    if (statusCode >= 400) {
+      return { type: 'protocol', message, timestamp, retryable: false };
+    }
+  }
+
+  const msgLower = message.toLowerCase();
+  if (msgLower.includes('network') || msgLower.includes('failed') || msgLower.includes('timeout')) {
+    return { type: 'network', message, timestamp, retryable: true };
+  }
+  if (msgLower.includes('parse') || msgLower.includes('json')) {
+    return { type: 'protocol', message, timestamp, retryable: false };
+  }
+
+  return { type: 'unknown', message, timestamp, retryable: true };
+}
+
+/** Debounce util com cancel/flush */
+function debounce<T extends (...args: any[]) => void>(
+  fn: T,
+  wait: number,
+  { maxWait }: { maxWait?: number } = {}
+) {
+  let timeoutId: number | null = null;
+  let startTime = 0;
+  let lastArgs: any[] | null = null;
+
+  const invoke = () => {
+    timeoutId = null;
+    startTime = 0;
+    if (lastArgs) {
+      fn(...lastArgs);
+      lastArgs = null;
+    }
   };
-}
 
-function normalizeSystemStatus(msg: WireSystemStatus): SystemStatus {
-  return {
-    uptime: msg.uptime,
-    memoryUsage: msg.memoryUsage,
-    activeConnections: msg.activeConnections,
-    queueSize: msg.queueSize,
-    updatedAt: msg.ts ?? now(),
+  const debounced = (...args: any[]) => {
+    lastArgs = args;
+    const now = Date.now();
+
+    if (!startTime) startTime = now;
+
+    if (timeoutId) window.clearTimeout(timeoutId);
+
+    const timeSinceStart = now - startTime;
+    if (maxWait && timeSinceStart >= maxWait) {
+      invoke();
+    } else {
+      timeoutId = window.setTimeout(invoke, wait) as unknown as number;
+    }
   };
+
+  (debounced as any).cancel = () => {
+    if (timeoutId) {
+      window.clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+    startTime = 0;
+    lastArgs = null;
+  };
+
+  (debounced as any).flush = () => {
+    if (timeoutId) {
+      window.clearTimeout(timeoutId);
+      invoke();
+    }
+  };
+
+  return debounced as T & { cancel: () => void; flush: () => void };
 }
 
-// -------------------- Reducer --------------------
-
-const initialState: StatusStreamState = {
-  metricsByHost: {},
-  alerts: [],
-  topology: {
-    nodes: new Map(),
-    links: new Map(),
-    nodeArray: [],
-    linkArray: [],
-  },
-  eventCount: 0,
-};
-
-function reducer(state: StatusStreamState, action: StatusAction): StatusStreamState {
-  switch (action.type) {
-    case 'METRICS_UPSERT': {
-      const nextMetrics = { ...state.metricsByHost, [action.payload.host]: action.payload };
-      return {
-        ...state,
-        metricsByHost: nextMetrics,
-        lastMetricsUpdate: now(),
-        eventCount: state.eventCount + 1,
-      };
-    }
-
-    case 'METRICS_REMOVE_EXPIRED': {
-      const nextMetrics = { ...state.metricsByHost };
-      let removed = false;
-
-      Object.entries(nextMetrics).forEach(([host, metrics]) => {
-        if (metrics.expiresAt && metrics.expiresAt < action.currentTime) {
-          delete nextMetrics[host];
-          removed = true;
-        }
-      });
-
-      return removed ? { ...state, metricsByHost: nextMetrics } : state;
-    }
-
-    case 'ALERT_PUSH': {
-      const newAlert = { ...action.payload, isNew: true };
-      const nextAlerts = clipRight([...state.alerts, newAlert], action.max);
-      return {
-        ...state,
-        alerts: nextAlerts,
-        eventCount: state.eventCount + 1,
-      };
-    }
-
-    case 'ALERT_ACKNOWLEDGE': {
-      const nextAlerts = state.alerts.map((alert) =>
-        alert.id === action.id ? { ...alert, acknowledged: true, isNew: false } : alert
-      );
-      return { ...state, alerts: nextAlerts };
-    }
-
-    case 'ALERT_REMOVE': {
-      const nextAlerts = state.alerts.filter((alert) => alert.id !== action.id);
-      return { ...state, alerts: nextAlerts };
-    }
-
-    case 'ALERT_CLEAR_ALL': {
-      return { ...state, alerts: [] };
-    }
-
-    case 'ALERT_CLEAR_AUTO_CLEAR': {
-      const nextAlerts = state.alerts.filter((alert) => !alert.autoClear);
-      return { ...state, alerts: nextAlerts };
-    }
-
-    case 'TOPOLOGY_SET': {
-      return {
-        ...state,
-        topology: action.payload,
-        eventCount: state.eventCount + 1,
-      };
-    }
-
-    case 'TOPOLOGY_UPDATE_NODES': {
-      const nodes = new Map(state.topology.nodes);
-      action.nodes.forEach((node) => {
-        nodes.set(node.id, { ...node, lastSeen: now() });
-      });
-
-      return {
-        ...state,
-        topology: {
-          ...state.topology,
-          nodes,
-          nodeArray: Array.from(nodes.values()),
-        },
-        eventCount: state.eventCount + 1,
-      };
-    }
-
-    case 'TOPOLOGY_UPDATE_LINKS': {
-      const links = new Map(state.topology.links);
-      action.links.forEach((link) => {
-        links.set(link.id, { ...link, lastSeen: now() });
-      });
-
-      return {
-        ...state,
-        topology: {
-          ...state.topology,
-          links,
-          linkArray: Array.from(links.values()),
-        },
-        eventCount: state.eventCount + 1,
-      };
-    }
-
-    case 'SYSTEM_STATUS_UPDATE': {
-      return {
-        ...state,
-        systemStatus: action.payload,
-        eventCount: state.eventCount + 1,
-      };
-    }
-
-    case 'LAST_EVENT': {
-      // Importante: NÃO incrementamos eventCount aqui para evitar contagem dupla,
-      // pois cada evento "real" já incrementa nas ações específicas acima.
-      return { ...state, lastEvent: action.payload };
-    }
-
-    case 'CONNECTION_ESTABLISHED': {
-      return {
-        ...state,
-        connectedAt: now(),
-        eventCount: 0,
-      };
-    }
-
-    case 'RESET':
-      return { ...initialState, connectedAt: now() };
-
-    default:
-      return state;
-  }
+/** Logger condicional (apenas dev) */
+function useStreamLogger(enabled: boolean) {
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  return useCallback(
+    (message: string, data?: any) => {
+      const dev = typeof process !== 'undefined' && process.env?.NODE_ENV === 'development';
+      if (enabled && dev) {
+        // eslint-disable-next-line no-console
+        console.log(`[Stream] ${message}`, data ?? '');
+      }
+    },
+    [enabled]
+  );
 }
 
-// -------------------- Opções do hook --------------------
+/** =========================
+ *  Hook principal
+ *  ========================= */
 
-export type UseStatusStreamOptions = Omit<
-  UseWebSocketOptions<any, WireEvent>,
-  'onMessage' | 'path' | 'serialize' | 'parse'
-> & {
-  path?: string;
-  maxAlerts?: number;
-  metricsTTLCheckInterval?: number;
-  autoClearAlerts?: boolean;
-  onMetrics?: (m: HostMetrics) => void;
-  onAlert?: (a: NormalizedAlert) => void;
-  onTopology?: (t: NormalizedTopology) => void;
-  onSystemStatus?: (s: SystemStatus) => void;
-  onCommandResponse?: (r: WireCommandResponse) => void;
-  onAny?: (e: WireEvent) => void;
-  persistent?: boolean;
-  enableMetricsExpiration?: boolean;
-};
-
-// -------------------- Hook principal --------------------
-
-export function useStatusStream(opts: UseStatusStreamOptions = {}) {
+export function useStatusStream(options: UseStatusStreamOptions = {}): UseStatusStreamState {
   const {
-    path = '/ws/status',
-    maxAlerts = 200,
-    metricsTTLCheckInterval = 30_000,
-    autoClearAlerts = true,
+    urls = ['/api/stream'],
+    protocol = (ENV_DEFAULTS.protocol as UseStatusStreamOptions['protocol']) ?? DEFAULTS.protocol,
+    token,
+    reconnect = ENV_DEFAULTS.reconnect ?? DEFAULTS.reconnect,
+    reconnectBackoffMs = (ENV_DEFAULTS.reconnectBackoffMs as [number, number]) ?? DEFAULTS.reconnectBackoffMs,
+    maxRetries = ENV_DEFAULTS.maxRetries ?? DEFAULTS.maxRetries,
+    pollIntervalMs = ENV_DEFAULTS.pollIntervalMs ?? DEFAULTS.pollIntervalMs,
+    pollUrl,
+    withCredentials = ENV_DEFAULTS.withCredentials ?? DEFAULTS.withCredentials,
+    onTopology,
     onMetrics,
     onAlert,
-    onTopology,
-    onSystemStatus,
-    onCommandResponse,
     onAny,
-    persistent = true,
-    enableMetricsExpiration = true,
-    // opções WS
-    token,
-    protocols,
-    makeUrl,
-    autoReconnect = true,
-    maxRetries = 0,
-    backoff,
-    heartbeat,
-    onOpen,
-    onClose,
-    onError,
-    onReconnecting,
-    onConnected,
-    onDisconnected,
-    deps,
-    enabled = true,
-    bufferSize = 50,
-    reconnectOnError = true,
-    messageHandlers,
-  } = opts;
+    persistent,
+    filter,
+  } = options;
 
-  const [state, dispatch] = useReducer(reducer, initialState);
-  const commandCallbacksRef = useRef<Map<string, (response: WireCommandResponse) => void>>(new Map());
+  const [status, setStatus] = useState<UseStatusStreamState['status']>('idle');
+  const [transport, setTransport] = useState<TransportKind>('none');
+  const [connected, setConnected] = useState(false);
+  const [lastError, setLastError] = useState<Error | undefined>(undefined);
+  const [lastErrorInfo, setLastErrorInfo] = useState<StreamError | undefined>(undefined);
+  const [alerts, setAlerts] = useState<AlertEvent[]>([]);
 
-  // Limpeza de métricas expiradas (TTL)
+  const logger = useStreamLogger(true);
+
+  const startedAtRef = useRef<number>(Date.now());
+  const lastEventAtRef = useRef<number | undefined>(undefined);
+  const messagesRef = useRef<number>(0);
+  const reconnectsRef = useRef<number>(0);
+  const retriesRef = useRef<number>(0);
+  const abortRef = useRef<AbortController | null>(null);
+  const pausedRef = useRef<boolean>(false);
+  const urlIndexRef = useRef<number>(0);
+  const pollTimerRef = useRef<number | null>(null);
+  const currentWsRef = useRef<WebSocket | null>(null);
+  const currentSseRef = useRef<EventSource | null>(null);
+
+  const clearAlerts = useCallback(() => {
+    setAlerts([]);
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.removeItem(STORAGE_KEYS.ALERTS);
+      } catch {}
+    }
+  }, []);
+
+  const criticalAlerts = useMemo(() => alerts.filter((a) => a.level === 'critical'), [alerts]);
+
+  // Persistir/recuperar alerts (cache offline)
   useEffect(() => {
-    if (!enableMetricsExpiration) return;
-    const id = window.setInterval(() => {
-      dispatch({ type: 'METRICS_REMOVE_EXPIRED', currentTime: now() });
-    }, metricsTTLCheckInterval);
-    return () => window.clearInterval(id);
-  }, [enableMetricsExpiration, metricsTTLCheckInterval]);
+    if (typeof window === 'undefined') return;
+    try {
+      // bootstrap inicial
+      const cached = localStorage.getItem(STORAGE_KEYS.ALERTS);
+      if (cached && !alerts.length) {
+        setAlerts(JSON.parse(cached));
+      }
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Limpeza automática de alerts (autoClear)
+  // Salvar cache on-change
   useEffect(() => {
-    if (!autoClearAlerts) return;
-    const id = window.setInterval(() => {
-      dispatch({ type: 'ALERT_CLEAR_AUTO_CLEAR' });
-    }, 60_000);
-    return () => window.clearInterval(id);
-  }, [autoClearAlerts]);
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(STORAGE_KEYS.ALERTS, JSON.stringify(alerts.slice(0, 200)));
+    } catch {}
+  }, [alerts]);
 
-  const handleMessage = useCallback(
-    (msg: WireEvent) => {
-      dispatch({ type: 'LAST_EVENT', payload: msg });
-      onAny?.(msg);
+  // Recuperar cache em caso de erro/desconexão
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!connected && status === 'error') {
+      try {
+        const cached = localStorage.getItem(STORAGE_KEYS.ALERTS);
+        if (cached) setAlerts(JSON.parse(cached));
+      } catch {}
+    }
+  }, [connected, status]);
 
-      switch (msg?.type) {
-        case 'snmp_metrics': {
-          const m = normalizeMetrics(msg as WireSnmpMetrics);
-          dispatch({ type: 'METRICS_UPSERT', payload: m });
-          onMetrics?.(m);
-          break;
-        }
+  const applyAlert = useCallback(
+    (a: AlertEvent) => {
+      if (filter?.alerts && !filter.alerts(a)) return;
+      setAlerts((prev) => {
+        const next = [a, ...prev].slice(0, 200);
+        return next;
+      });
+    },
+    [filter]
+  );
 
-        case 'alert': {
-          const a = normalizeAlert(msg as WireAlert);
-          dispatch({ type: 'ALERT_PUSH', payload: a, max: maxAlerts });
-          onAlert?.(a);
-          break;
-        }
+  const updateStatsOnEvent = useCallback(() => {
+    messagesRef.current += 1;
+    lastEventAtRef.current = Date.now();
+  }, []);
 
-        case 'topology_update': {
-          const t = normalizeTopology(msg as WireTopologyUpdate);
-          dispatch({ type: 'TOPOLOGY_SET', payload: t });
-          onTopology?.(t);
-          break;
-        }
+  const handleEvent = useCallback(
+    (evt: StreamEvent) => {
+      updateStatsOnEvent();
+      onAny?.(evt);
 
-        case 'system_status': {
-          const s = normalizeSystemStatus(msg as WireSystemStatus);
-          dispatch({ type: 'SYSTEM_STATUS_UPDATE', payload: s });
-          onSystemStatus?.(s);
-          break;
-        }
-
-        case 'command_response': {
-          const response = msg as WireCommandResponse;
-          if (response.commandId) {
-            const cb = commandCallbacksRef.current.get(response.commandId);
-            cb?.(response);
-            commandCallbacksRef.current.delete(response.commandId);
+      switch (evt.type) {
+        case 'topology':
+          // cache rápido de topology (para uso futuro/offline)
+          if (typeof window !== 'undefined') {
+            try {
+              localStorage.setItem(STORAGE_KEYS.TOPOLOGY, JSON.stringify(evt.data));
+            } catch {}
           }
-          onCommandResponse?.(response);
+          onTopology?.(evt.data);
           break;
-        }
-
-        case 'pong':
-          // heartbeat já tratado pelo hook base — opcionalmente poderíamos
-          // calcular latência aqui usando timestamp do ping.
+        case 'metrics':
+          onMetrics?.(evt.data);
           break;
-
+        case 'alert':
+          onAlert?.(evt.data);
+          applyAlert(evt.data);
+          break;
         default:
           break;
       }
     },
-    [onAny, onMetrics, onAlert, onTopology, onSystemStatus, onCommandResponse, maxAlerts]
+    [onAny, onTopology, onMetrics, onAlert, applyAlert, updateStatsOnEvent]
   );
 
-  const handleOpen = useCallback(
-    (ev: Event) => {
-      dispatch({ type: 'CONNECTION_ESTABLISHED' });
-      onOpen?.(ev);
+  // Debounce/Throttling para bursts de mensagens
+  const debouncedHandleEvent = useMemo(
+    () => debounce(handleEvent, 100, { maxWait: 1000 }),
+    [handleEvent]
+  );
+
+  const closeConnections = useCallback(() => {
+    // WS
+    try {
+      currentWsRef.current?.close();
+    } catch {}
+    currentWsRef.current = null;
+
+    // SSE
+    try {
+      currentSseRef.current?.close?.();
+    } catch {}
+    currentSseRef.current = null;
+
+    // Polling
+    if (pollTimerRef.current) {
+      window.clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+
+    // Abort
+    abortRef.current?.abort();
+    abortRef.current = null;
+  }, []);
+
+  const moveToNextUrl = useCallback(() => {
+    urlIndexRef.current = (urlIndexRef.current + 1) % urls.length;
+  }, [urls.length]);
+
+  // WebSocket
+  const connectViaWS = useCallback(
+    async (rawUrl: string) => {
+      const authToken = await resolveToken(token);
+      const url = rawUrl;
+      const ws = new WebSocket(url, authToken ? [] : undefined);
+      currentWsRef.current = ws;
+
+      setTransport('ws');
+      setStatus('connecting');
+      logger('WS connecting', url);
+
+      ws.onopen = () => {
+        setConnected(true);
+        setStatus('open');
+        setLastError(undefined);
+        setLastErrorInfo(undefined);
+        retriesRef.current = 0;
+        logger('WS open');
+      };
+
+      ws.onmessage = (ev) => {
+        const data =
+          typeof ev.data === 'string'
+            ? ev.data
+            : ev.data instanceof Blob && TEXT_DECODER
+            ? TEXT_DECODER.decode(ev.data as BlobPart as ArrayBuffer)
+            : ev.data;
+        debouncedHandleEvent(coerceStreamEvent(data));
+      };
+
+      ws.onerror = () => {
+        const info = classifyError(new Error('WebSocket error'));
+        setLastError(new Error(info.message));
+        setLastErrorInfo(info);
+        logger('WS error', info);
+      };
+
+      ws.onclose = () => {
+        setConnected(false);
+        setStatus(pausedRef.current ? 'paused' : 'closed');
+        logger('WS closed');
+
+        if (!pausedRef.current && reconnect) {
+          const attempt = retriesRef.current++;
+          const delay = expBackoff(attempt, reconnectBackoffMs);
+          reconnectsRef.current += 1;
+          logger('WS reconnect in', delay);
+
+          window.setTimeout(() => {
+            moveToNextUrl();
+            start(); // tenta novamente com próximo transport/url
+          }, delay);
+        }
+      };
     },
-    [onOpen]
+    [debouncedHandleEvent, token, reconnect, reconnectBackoffMs, moveToNextUrl, logger]
   );
 
-  const wsOpts = useMemo<UseWebSocketOptions<any, WireEvent>>(
+  // SSE
+  const connectViaSSE = useCallback(
+    async (rawUrl: string) => {
+      const url = toSseUrl(rawUrl);
+      const authToken = await resolveToken(token);
+
+      setTransport('sse');
+      setStatus('connecting');
+      logger('SSE connecting', url);
+
+      // EventSource não suporta custom headers em todos ambientes;
+      // estratégia: se precisar de Authorization, depende do servidor aceitar via query.
+      const queryToken = authToken ? (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(authToken) : '';
+      const es = new EventSource(url + queryToken, { withCredentials });
+      currentSseRef.current = es;
+
+      es.onopen = () => {
+        setConnected(true);
+        setStatus('open');
+        setLastError(undefined);
+        setLastErrorInfo(undefined);
+        retriesRef.current = 0;
+        logger('SSE open');
+      };
+
+      es.onerror = () => {
+        setConnected(false);
+        setStatus(pausedRef.current ? 'paused' : 'closed');
+        const info = classifyError(new Error('SSE error'));
+        setLastError(new Error(info.message));
+        setLastErrorInfo(info);
+        logger('SSE error', info);
+        es.close();
+
+        if (!pausedRef.current && reconnect) {
+          const attempt = retriesRef.current++;
+          const delay = expBackoff(attempt, reconnectBackoffMs);
+          reconnectsRef.current += 1;
+          logger('SSE reconnect in', delay);
+
+          window.setTimeout(() => {
+            moveToNextUrl();
+            start();
+          }, delay);
+        }
+      };
+
+      const handleMsg = (payload: any) => debouncedHandleEvent(coerceStreamEvent(payload));
+
+      es.addEventListener('message', (e: MessageEvent) => handleMsg((e as any).data));
+      es.addEventListener('topology', (e: MessageEvent) => handleMsg((e as any).data));
+      es.addEventListener('metrics', (e: MessageEvent) => handleMsg((e as any).data));
+      es.addEventListener('alert', (e: MessageEvent) => handleMsg((e as any).data));
+      es.addEventListener('ping', (e: MessageEvent) => handleMsg((e as any).data));
+      es.addEventListener('hello', (e: MessageEvent) => handleMsg((e as any).data));
+    },
+    [debouncedHandleEvent, reconnect, reconnectBackoffMs, moveToNextUrl, token, withCredentials, logger]
+  );
+
+  // Polling (fallback/snapshot)
+  const connectViaPoll = useCallback(
+    async (rawUrl: string) => {
+      const url = pollUrl || `${toSseUrl(rawUrl).replace(/\/$/, '')}/poll`;
+      const authToken = await resolveToken(token);
+
+      setTransport('poll');
+      setStatus('connecting');
+      setConnected(true); // polling "ativo"
+      logger('POLL start', url);
+
+      const doPoll = async () => {
+        try {
+          const headers: HeadersInit = authToken ? { Authorization: `Bearer ${authToken}` } : {};
+          const res = await fetch(url, { credentials: withCredentials ? 'include' : 'same-origin', headers });
+          if (!res.ok) throw Object.assign(new Error(`Polling failed: ${res.status}`), { status: res.status });
+          const text = await res.text();
+
+          // Aceita NDJSON ou JSON array/obj
+          const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+          if (lines.length > 1) {
+            for (const ln of lines) debouncedHandleEvent(coerceStreamEvent(ln));
+          } else {
+            const payload = parseJsonSafe(text);
+            if (Array.isArray(payload)) {
+              payload.forEach((p) => debouncedHandleEvent(coerceStreamEvent(p)));
+            } else {
+              debouncedHandleEvent(coerceStreamEvent(payload));
+            }
+          }
+
+          setStatus('open');
+          setLastError(undefined);
+          setLastErrorInfo(undefined);
+          retriesRef.current = 0;
+        } catch (err: any) {
+          const code = typeof err?.status === 'number' ? err.status : undefined;
+          const info = classifyError(err, code);
+          setLastError(err instanceof Error ? err : new Error(String(err)));
+          setLastErrorInfo(info);
+          setStatus('error');
+          logger('POLL error', info);
+
+          if (!info.retryable) {
+            // para polling se não for recuperável
+            if (pollTimerRef.current) {
+              window.clearInterval(pollTimerRef.current);
+              pollTimerRef.current = null;
+            }
+          }
+        }
+      };
+
+      // primeira chamada imediata
+      void doPoll();
+
+      // agendamento
+      pollTimerRef.current = window.setInterval(doPoll, pollIntervalMs) as unknown as number;
+    },
+    [debouncedHandleEvent, pollUrl, pollIntervalMs, token, withCredentials, logger]
+  );
+
+  const start = useCallback(async () => {
+    if (pausedRef.current) return;
+    if (retriesRef.current > (maxRetries ?? 0)) {
+      setStatus('error');
+      setConnected(false);
+      logger('Max retries reached');
+      return;
+    }
+
+    const url = urls[urlIndexRef.current] ?? urls[0];
+    try {
+      if (protocol === 'ws' || (protocol === 'auto' && isWebSocketUrl(url))) {
+        await connectViaWS(url);
+      } else if (protocol === 'sse' || protocol === 'auto') {
+        await connectViaSSE(url);
+      } else if (protocol === 'poll') {
+        await connectViaPoll(url);
+      } else {
+        if (isWebSocketUrl(url)) {
+          await connectViaWS(url);
+        } else {
+          await connectViaSSE(url);
+        }
+      }
+    } catch (err: any) {
+      const info = classifyError(err);
+      setLastError(err instanceof Error ? err : new Error(String(err)));
+      setLastErrorInfo(info);
+      setStatus('error');
+      logger('Start connection error', info);
+
+      // fallback se auto
+      if (protocol === 'auto') {
+        try {
+          await connectViaSSE(url);
+        } catch {
+          await connectViaPoll(url);
+        }
+      }
+    }
+  }, [urls, protocol, connectViaWS, connectViaSSE, connectViaPoll, maxRetries, logger]);
+
+  const pause = useCallback(() => {
+    pausedRef.current = true;
+    setStatus('paused');
+    setConnected(false);
+    closeConnections();
+    logger('Paused');
+  }, [closeConnections, logger]);
+
+  const resume = useCallback(() => {
+    if (!pausedRef.current) return;
+    pausedRef.current = false;
+    retriesRef.current = 0;
+    setLastError(undefined);
+    setLastErrorInfo(undefined);
+    setStatus('connecting');
+    logger('Resuming…');
+    start();
+  }, [start, logger]);
+
+  const close = useCallback(() => {
+    pausedRef.current = true;
+    closeConnections();
+    setConnected(false);
+    setStatus('closed');
+    logger('Closed');
+  }, [closeConnections, logger]);
+
+  // Health check robusto
+  const healthCheck = useCallback(async (): Promise<boolean> => {
+    if (!connected) return false;
+
+    // Preferir AbortSignal.timeout se disponível
+    const timeoutMs = 5_000;
+    try {
+      if (typeof (AbortSignal as any)?.timeout === 'function') {
+        const res = await fetch('/api/health', { signal: (AbortSignal as any).timeout(timeoutMs) });
+        return res.ok;
+      }
+      // Fallback manual
+      const ctrl = new AbortController();
+      const to = window.setTimeout(() => ctrl.abort(), timeoutMs);
+      try {
+        const res = await fetch('/api/health', { signal: ctrl.signal });
+        return res.ok;
+      } finally {
+        window.clearTimeout(to);
+      }
+    } catch {
+      return false;
+    }
+  }, [connected]);
+
+  // Lifecycle principal
+  useEffect(() => {
+    if (!(persistent || onTopology || onMetrics || onAlert || onAny)) {
+      // Nenhum listener e não persistente: não conecta
+      setStatus('idle');
+      setConnected(false);
+      setTransport('none');
+      return;
+    }
+
+    // inicia
+    startedAtRef.current = Date.now();
+    setStatus('connecting');
+    setConnected(false);
+    setLastError(undefined);
+    setLastErrorInfo(undefined);
+    messagesRef.current = 0;
+    reconnectsRef.current = 0;
+    retriesRef.current = 0;
+    pausedRef.current = false;
+    debouncedHandleEvent.flush?.();
+    void start();
+
+    return () => {
+      // cleanup
+      (debouncedHandleEvent as any).cancel?.();
+      closeConnections();
+      setConnected(false);
+      setStatus('closed');
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    // mudanças relevantes que exigem reconexão
+    JSON.stringify(urls),
+    protocol,
+    pollUrl,
+    pollIntervalMs,
+    withCredentials,
+    Boolean(persistent),
+  ]);
+
+  const state = useMemo<UseStatusStreamState>(
     () => ({
-      path,
-      token,
-      protocols,
-      makeUrl,
-      autoReconnect,
-      maxRetries,
-      backoff,
-      heartbeat,
-      onOpen: handleOpen,
-      onClose,
-      onError,
-      onReconnecting,
-      onConnected,
-      onDisconnected,
-      onMessage: handleMessage,
-      deps,
-      enabled,
-      bufferSize,
-      reconnectOnError,
-      messageHandlers,
+      connected,
+      status,
+      transport,
+      lastError,
+      lastErrorInfo,
+      stats: {
+        startedAt: startedAtRef.current,
+        lastEventAt: lastEventAtRef.current,
+        messages: messagesRef.current,
+        reconnects: reconnectsRef.current,
+        retries: retriesRef.current,
+      },
+      pause,
+      resume,
+      close,
+      alerts,
+      criticalAlerts,
+      clearAlerts,
+      healthCheck,
     }),
     [
-      path,
-      token,
-      protocols,
-      makeUrl,
-      autoReconnect,
-      maxRetries,
-      backoff,
-      heartbeat,
-      handleOpen,
-      onClose,
-      onError,
-      onReconnecting,
-      onConnected,
-      onDisconnected,
-      handleMessage,
-      deps,
-      enabled,
-      bufferSize,
-      reconnectOnError,
-      messageHandlers,
+      connected,
+      status,
+      transport,
+      lastError,
+      lastErrorInfo,
+      pause,
+      resume,
+      close,
+      alerts,
+      criticalAlerts,
+      clearAlerts,
+      healthCheck,
     ]
   );
 
-  const ws: UseWebSocketReturn<any, WireEvent> = persistent
-    ? usePersistentWebSocket(wsOpts)
-    : useWebSocket(wsOpts);
+  return state;
+}
 
-  // -------------------- Commands --------------------
+/** =========================
+ *  Hook auxiliar – apenas alertas
+ *  ========================= */
 
-  const sendCommand = useCallback(
-    (data: any, callback?: (response: WireCommandResponse) => void) => {
-      const commandId = data.commandId || `cmd-${now()}-${Math.random().toString(36).slice(2, 9)}`;
-      const command = { ...data, commandId, ts: Date.now() };
+export function useAlertsStream(
+  options: Omit<UseStatusStreamOptions, 'onTopology' | 'onMetrics' | 'onAny'> = {}
+) {
+  const stream = useStatusStream({
+    persistent: true,
+    ...options,
+  });
 
-      if (callback) {
-        commandCallbacksRef.current.set(commandId, callback);
-        // timeout do callback
-        window.setTimeout(() => {
-          if (commandCallbacksRef.current.has(commandId)) {
-            commandCallbacksRef.current.delete(commandId);
-            callback({
-              type: 'command_response',
-              commandId,
-              success: false,
-              message: 'Command timeout',
-              ts: now(),
-            });
-          }
-        }, 30_000);
+  return {
+    connected: stream.connected,
+    status: stream.status,
+    alerts: stream.alerts,
+    criticalAlerts: stream.criticalAlerts,
+    clearAlerts: stream.clearAlerts,
+  };
+}
+
+/** =========================
+ *  Hook especializado para métricas
+ *  ========================= */
+
+export function useMetricsStream(hosts?: string[]) {
+  const [metrics, setMetrics] = useState<Map<string, MetricsPayload>>(new Map());
+
+  const stream = useStatusStream({
+    persistent: true,
+    onMetrics: (metric) => {
+      if (!metric?.host) return;
+      if (!hosts || hosts.includes(metric.host)) {
+        setMetrics((prev) => {
+          const next = new Map(prev);
+          next.set(metric.host, metric);
+          return next;
+        });
       }
-
-      return ws.sendJson(command);
     },
-    [ws]
-  );
+  });
 
-  const requestRefreshAll = useCallback(
-    (cb?: (response: WireCommandResponse) => void) => sendCommand({ type: 'refresh_all' }, cb),
-    [sendCommand]
-  );
-
-  const requestHostStatus = useCallback(
-    (host: string, cb?: (response: WireCommandResponse) => void) =>
-      sendCommand({ type: 'refresh_host', host }, cb),
-    [sendCommand]
-  );
-
-  const acknowledgeAlert = useCallback((alertId: string) => {
-    dispatch({ type: 'ALERT_ACKNOWLEDGE', id: alertId });
-  }, []);
-
-  const removeAlert = useCallback((alertId: string) => {
-    dispatch({ type: 'ALERT_REMOVE', id: alertId });
-  }, []);
-
-  const clearAlerts = useCallback(() => dispatch({ type: 'ALERT_CLEAR_ALL' }), []);
-  const resetAll = useCallback(() => dispatch({ type: 'RESET' }), []);
-
-  // -------------------- Derivados --------------------
-
-  const metricsArray = useMemo(
-    () => Object.values(state.metricsByHost).sort((a, b) => b.updatedAt - a.updatedAt),
-    [state.metricsByHost]
-  );
-
-  const criticalAlerts = useMemo(
-    () => state.alerts.filter((a) => a.level === 'critical' && !a.acknowledged),
-    [state.alerts]
-  );
-
-  const newAlerts = useMemo(() => state.alerts.filter((a) => a.isNew), [state.alerts]);
-
-  const connectionDuration = useMemo(() => {
-    return state.connectedAt ? now() - state.connectedAt : 0;
-  }, [state.connectedAt]);
+  const getHostMetrics = useCallback((host: string) => metrics.get(host), [metrics]);
 
   return {
-    // Conexão
-    status: ws.status,
-    isConnected: ws.isConnected,
-    isConnecting: ws.isConnecting,
-    isReconnecting: ws.isReconnecting,
-    retryCount: ws.retryCount,
-    error: ws.error,
-    connectionDuration,
-    eventCount: state.eventCount,
-
-    // Dados normalizados
-    metricsByHost: state.metricsByHost,
-    metricsList: metricsArray,
-    alerts: state.alerts,
-    criticalAlerts,
-    newAlerts,
-    topology: state.topology,
-    systemStatus: state.systemStatus,
-    lastEvent: state.lastEvent,
-
-    // Ações
-    sendCommand,
-    requestRefreshAll,
-    requestHostStatus,
-    acknowledgeAlert,
-    removeAlert,
-    clearAlerts,
-    resetAll,
-
-    // WS utils
-    reconnect: ws.reconnect,
-    disconnect: ws.disconnect,
-    getWebSocket: ws.getWebSocket,
-    clearMessageHistory: ws.clearMessageHistory,
+    ...stream,
+    metrics,
+    getHostMetrics,
   };
 }
 
-// -------------------- Hooks especializados --------------------
+/** =========================
+ *  Fallback leve para ambientes sem window (SSR)
+ *  ========================= */
 
-/** Hook para monitorar apenas métricas */
-export function useMetricsStream(opts: UseStatusStreamOptions = {}) {
-  const s = useStatusStream(opts);
+export function useStatusStreamNoop(): UseStatusStreamState {
+  const noop = () => void 0;
   return {
-    metricsByHost: s.metricsByHost,
-    metricsList: s.metricsList,
-    lastMetricsUpdate: s.lastEvent?.type === 'snmp_metrics' ? s.lastEvent : undefined,
-    isConnected: s.isConnected,
+    connected: false,
+    status: 'idle',
+    transport: 'none',
+    stats: {
+      startedAt: Date.now(),
+      lastEventAt: undefined,
+      messages: 0,
+      reconnects: 0,
+      retries: 0,
+    },
+    pause: noop,
+    resume: noop,
+    close: noop,
+    alerts: [],
+    criticalAlerts: [],
+    clearAlerts: noop,
+    lastError: undefined,
+    lastErrorInfo: undefined,
+    healthCheck: async () => false,
   };
 }
 
-/** Hook para monitorar apenas alertas */
-export function useAlertsStream(opts: UseStatusStreamOptions = {}) {
-  const s = useStatusStream(opts);
-  return {
-    alerts: s.alerts,
-    criticalAlerts: s.criticalAlerts,
-    newAlerts: s.newAlerts,
-    acknowledgeAlert: s.acknowledgeAlert,
-    removeAlert: s.removeAlert,
-    clearAlerts: s.clearAlerts,
-    isConnected: s.isConnected,
-  };
-}
-
-// -------------------- Exemplos --------------------
+/** =========================
+ *  Exemplos de uso (comentados)
+ *  ========================= */
 /*
-const {
-  metricsList,
-  alerts,
-  topology,
-  systemStatus,
-  sendCommand,
-  acknowledgeAlert,
-} = useStatusStream({
-  onAlert: (a) => a.level === 'critical' && toast.error(a.message),
-  onSystemStatus: (st) => console.log('Queue size:', st.queueSize),
-  maxAlerts: 500,
-});
+import { useAlertsStream } from '@/hooks/useStatusStream';
 
-// Comando com callback
-sendCommand({ type: 'reboot_host', host: 'router-01' }, (resp) => {
-  resp.success ? toast.success('Reboot iniciado') : toast.error(resp.message || 'Falha no reboot');
-});
+export function AlertsPanel() {
+  const { alerts, criticalAlerts, connected, status, clearAlerts } = useAlertsStream({
+    urls: ['/api/alerts/stream'],
+    filter: { alerts: (a) => a.level !== 'info' },
+    onAlert: (a) => {
+      if (Notification.permission === 'granted' && a.level === 'critical') {
+        new Notification('Critical Alert', { body: a.message, icon: '/alert-icon.png' });
+      }
+    },
+  });
+
+  return (
+    <div>
+      <div>
+        <h3>Alerts ({alerts.length})</h3>
+        <button onClick={clearAlerts} disabled={!alerts.length}>Clear</button>
+        <span>{connected ? 'connected' : status}</span>
+        <div>Critical: {criticalAlerts.length}</div>
+      </div>
+      <ul>
+        {alerts.map((a) => <li key={a.id}>{a.level.toUpperCase()} — {a.message}</li>)}
+      </ul>
+    </div>
+  );
+}
 */
