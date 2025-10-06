@@ -1,14 +1,15 @@
 # scripts/ops/roadmap.yml
-# Fonte de verdade do roadmap MapsProve: labels, milestones e issues
-# -> Consumido por: scripts/ops/bootstrap-roadmap.sh
+# Fonte da verdade para o bootstrap do roadmap no GitHub.
+# Usado por: scripts/ops/bootstrap-roadmap.sh
+# Edite este arquivo para ajustar labels, milestones e issues do projeto.
 
 labels:
   - name: "backend"
     color: "0366d6"
-    description: "Tarefas de servidor, API, integrações"
+    description: "Servidor, API, integrações"
   - name: "frontend"
     color: "1f883d"
-    description: "Tarefas de UI/UX e React"
+    description: "UI/UX, React, componentes"
   - name: "infra"
     color: "8250df"
     description: "DevOps, Docker, deploy, observabilidade"
@@ -20,44 +21,41 @@ labels:
     description: "SSE/WebSocket e tempo real"
   - name: "security"
     color: "a40e26"
-    description: "Autenticação, autorização, segredos"
+    description: "Autenticação, autorização, segredos e hardening"
   - name: "diagnostics"
     color: "0e8a16"
-    description: "Ping, traceroute, SSH e afins"
+    description: "Ping, traceroute, SSH e diagnósticos"
   - name: "ux"
     color: "fbca04"
     description: "Experiência do usuário e acessibilidade"
   - name: "docs"
     color: "0e8a16"
-    description: "Documentação e runbooks"
+    description: "Documentação e guias"
+  - name: "tests"
+    color: "5319e7"
+    description: "Testes unitários, integração e E2E"
   - name: "good-first-issue"
     color: "7057ff"
-    description: "Bom para iniciantes no projeto"
+    description: "Tarefas simples para iniciantes no projeto"
   - name: "help-wanted"
     color: "008672"
     description: "Ajuda bem-vinda"
   - name: "blocked"
     color: "b60205"
-    description: "Bloqueado por dependências"
-  - name: "enhancement"
-    color: "a2eeef"
-    description: "Melhorias e refinamentos"
-  - name: "bug"
-    color: "d73a4a"
-    description: "Correções de defeitos"
+    description: "Bloqueado por dependências/decisões"
 
 milestones:
   - title: "M1 Fundação"
     description: "Base do projeto, contratos e esqueleto"
     week: 1
   - title: "M2 Zabbix MVP"
-    description: "Integração de hosts/alertas do Zabbix (mínima)"
+    description: "Integração inicial de hosts/alertas do Zabbix (mínima)"
     week: 2
   - title: "M3 Stream"
-    description: "SSE robusto com retomada, cache e métricas"
+    description: "SSE robusto com retomada, eventos e cache"
     week: 3
   - title: "M4 Diag+Links"
-    description: "Ações de diagnóstico e modelagem/render de links"
+    description: "Ações de diagnóstico e modelagem/visualização de links"
     week: 4
   - title: "M5 Segurança+Setup"
     description: "RBAC, setup seguro e backup/restore"
@@ -67,225 +65,306 @@ milestones:
     week: 6
 
 issues:
-  # ============================
+  # -------------------------
   # Semana 1 — Fundação
-  # ============================
-  - title: "Backend: /livez, /readyz, /version"
-    body: "Implementar endpoints básicos de health/versionamento com testes e logs estruturados."
+  # -------------------------
+  - title: "Backend: endpoints /livez, /readyz e /version"
+    body: |
+      Implementar endpoints básicos de health e versionamento no backend:
+      - GET /livez (retorna 200 sempre que o processo está vivo)
+      - GET /readyz (valida dependências: DB, variáveis requeridas)
+      - GET /version (commit/tag, build time)
+      Incluir logs estruturados e testes de rota.
     milestone: "M1 Fundação"
-    labels: ["backend", "infra"]
+    labels: ["backend", "tests"]
 
-  - title: "Backend: migrations nodes/links + repo básico"
-    body: "Criar schema mínimo para nodes/links e repositório (CRUD básico / upsert)."
-    milestone: "M1 Fundação"
-    labels: ["backend", "infra"]
-
-  - title: "Backend: stub /api/topology (+detalhes por id)"
-    body: "Fornecer /api/topology com seed e endpoints de detalhes para destravar o frontend."
+  - title: "Backend: migrations nodes/links + repositório básico"
+    body: |
+      Criar schema mínimo para armazenar topologia:
+      - Tabelas: nodes, links (id, name, type, status, lat, lon, meta JSONB)
+      - CRUD básico e upsert por id
+      - Seeds iniciais para desenvolvimento
     milestone: "M1 Fundação"
     labels: ["backend"]
 
-  - title: "Backend: SSE esqueleto /api/stream (heartbeat)"
-    body: "SSE básico com event: heartbeat a cada N segundos; sem dados ainda."
+  - title: "Backend: stub /api/topology (+detalhes por id)"
+    body: |
+      Implementar endpoints REST:
+      - GET /api/topology (lista nós e links - seed)
+      - GET /api/topology/nodes/:id
+      - GET /api/topology/links/:id
+      Retornar dados mockados até integração real.
+    milestone: "M1 Fundação"
+    labels: ["backend"]
+
+  - title: "Backend: esqueleto SSE /api/stream (heartbeat)"
+    body: |
+      Configurar Server-Sent Events:
+      - GET /api/stream (mantém conexão aberta)
+      - enviar event:heartbeat a cada N segundos
+      - logs de conexão e desconexão
     milestone: "M1 Fundação"
     labels: ["backend", "stream"]
 
   - title: "Frontend: conectar TopologyLayout a /api/topology (seed)"
-    body: "Consumir a rota stub e renderizar nodes/links seed no mapa."
+    body: |
+      Consumir a rota stub de topologia e renderizar nodes/links:
+      - Atualizar seletores/lojas
+      - Garantir que NetworkMap renderize seeds
     milestone: "M1 Fundação"
     labels: ["frontend", "ux"]
 
   - title: "Frontend: useStatusStream com heartbeat e estados"
-    body: "Exibir status connected/paused/error e reconectar automaticamente."
+    body: |
+      Implementar estado do stream no frontend:
+      - Mostrar status connected/paused/error
+      - Reconectar automaticamente
+      - Badge de alertas no Sidebar
     milestone: "M1 Fundação"
     labels: ["frontend", "stream"]
 
   - title: "DevOps: docker-compose.prod.yml + HEALTHCHECK"
-    body: "Multi-stage build e healthchecks; documentação rápida de execução."
+    body: |
+      Criar compose de produção com:
+      - Multi-stage build
+      - HEALTHCHECK nos serviços
+      - Variáveis de ambiente mínimas
+      Documentar execução local.
     milestone: "M1 Fundação"
     labels: ["infra", "docs"]
 
   - title: "Legal: harmonizar LICENSE (MIT vs GPLv3)"
-    body: "Decidir licença e alinhar README/headers de arquivos."
+    body: |
+      Definir licença do projeto:
+      - Alinhar README, LICENSE e headers
+      - Atualizar referências no repositório
     milestone: "M1 Fundação"
     labels: ["infra", "docs"]
 
-  # ============================
+  - title: "Docs: CONTRIBUTING.md + CODEOWNERS"
+    body: |
+      Adicionar CONTRIBUTING.md com padrões de commits, PRs e testes.
+      Incluir CODEOWNERS para revisão de áreas críticas.
+    milestone: "M1 Fundação"
+    labels: ["docs", "good-first-issue"]
+
+  # -------------------------
   # Semana 2 — Zabbix MVP
-  # ============================
-  - title: "Zabbix: cliente TS + auth + chamadas básicas"
-    body: "Implementar módulo de cliente Zabbix (login, host.get, item.get) com tipagem."
+  # -------------------------
+  - title: "Backend: cliente Zabbix (login, host.get, trigger.get)"
+    body: |
+      Implementar módulo zabbix-client:
+      - autenticação (token)
+      - host.get (atributos chave)
+      - trigger.get (alertas básicos)
+      Cobrir com testes unitários (mock).
+    milestone: "M2 Zabbix MVP"
+    labels: ["backend", "zabbix", "tests"]
+
+  - title: "Backend: ETL host→node (geo, status)"
+    body: |
+      Mapear hosts do Zabbix para nodes:
+      - Preencher lat/lon a partir de meta/labels
+      - Normalizar status (up/down/degraded/unknown)
+      - Upsert no repositório
     milestone: "M2 Zabbix MVP"
     labels: ["backend", "zabbix"]
 
-  - title: "Zabbix: coletar hosts e mapear para TopologyNode"
-    body: "Transformar hosts do Zabbix em nodes (id, name, status, coords)."
+  - title: "Backend: ingest de alertas (webhook/polling)"
+    body: |
+      Expor endpoint de ingest para alertas ou polling periódico:
+      - Transformar alerta Zabbix → modelo interno
+      - Persistir últimos N alertas (cache/memória)
     milestone: "M2 Zabbix MVP"
-    labels: ["backend", "zabbix"]
+    labels: ["backend", "zabbix", "stream"]
 
-  - title: "Backend: /api/topology/nodes (Zabbix)"
-    body: "Endpoint servindo nodes reais (com cache/ETag)."
+  - title: "Frontend: renderizar nós reais com status do Zabbix"
+    body: |
+      Substituir seeds por dados reais:
+      - Colorir nós por status
+      - Melhorar legenda/tooltip
     milestone: "M2 Zabbix MVP"
-    labels: ["backend", "zabbix"]
+    labels: ["frontend", "zabbix", "ux"]
 
-  - title: "Frontend: renderização de nós reais no mapa"
-    body: "Substituir seed por dados reais do backend; loading states e erros."
+  - title: "QA: fixtures de Zabbix + mock server"
+    body: |
+      Criar fixtures JSON do Zabbix e mock de respostas.
+      Base para testes e desenvolvimento offline.
     milestone: "M2 Zabbix MVP"
-    labels: ["frontend", "ux"]
+    labels: ["tests", "zabbix"]
 
-  - title: "Zabbix: triggers → alerts (transformação mínima)"
-    body: "Converter triggers em alertas, nivelando severidades para o frontend."
-    milestone: "M2 Zabbix MVP"
-    labels: ["backend", "zabbix"]
-
-  - title: "Backend: /api/alerts (poll inicial)"
-    body: "Rota REST para listar alertas do Zabbix (antes do stream)."
-    milestone: "M2 Zabbix MVP"
-    labels: ["backend", "zabbix"]
-
-  - title: "Docs: Zabbix de teste (credenciais e passos)"
-    body: "Guia para apontar dev env para instância de teste do Zabbix."
-    milestone: "M2 Zabbix MVP"
-    labels: ["docs", "zabbix"]
-
-  # ============================
-  # Semana 3 — Stream em Tempo Real
-  # ============================
-  - title: "Backend: SSE /api/stream (alerts+metrics)"
-    body: "Emitir eventos de alert e metrics; suportar Last-Event-ID."
-    milestone: "M3 Stream"
-    labels: ["backend", "stream", "zabbix"]
-
-  - title: "Backend: heartbeat e backpressure"
-    body: "Manter conexão viva e evitar saturação de clientes lentos."
+  # -------------------------
+  # Semana 3 — Stream
+  # -------------------------
+  - title: "Backend: SSE com eventos topology_update/metrics/alert"
+    body: |
+      Evoluir /api/stream para enviar:
+      - topology_update (delta ou snapshot)
+      - metrics (cpu/mem por host)
+      - alert (crítico/aviso)
+      Suportar Last-Event-ID e reconexão.
     milestone: "M3 Stream"
     labels: ["backend", "stream"]
 
-  - title: "Frontend: useStatusStream (SSE→WS fallback→poll)"
-    body: "Robustez do hook com reconexão exponencial, cache offline e métricas."
+  - title: "Backend: métricas do stream (prom-client)"
+    body: |
+      Expor métricas do próprio stream:
+      - conexões ativas, eventos/min, bytes enviados
+      - endpoint /metrics para Prometheus
+    milestone: "M3 Stream"
+    labels: ["infra", "stream"]
+
+  - title: "Frontend: useStatusStream robusto (backoff, cache offline)"
+    body: |
+      Melhorar hook de stream:
+      - backoff exponencial, pausa/retomar manual
+      - cache de últimos alerts (localStorage)
+      - indicadores de conexão (Sidebar)
     milestone: "M3 Stream"
     labels: ["frontend", "stream"]
 
-  - title: "Frontend: badge de alertas e toasts críticos"
-    body: "Contador e destaque de alertas críticos com notifications (quando permitido)."
+  - title: "Frontend: AlertsPanel com filtros & badges"
+    body: |
+      Exibir lista de alertas com filtros (critical/warn/info),
+      badge no Sidebar e clear all.
     milestone: "M3 Stream"
     labels: ["frontend", "ux", "stream"]
 
-  - title: "Backend: métricas do stream (prom-client)"
-    body: "Expor /metrics do stream: conexões ativas, eventos/min, erros."
-    milestone: "M3 Stream"
-    labels: ["backend", "infra", "stream"]
-
-  - title: "Infra: nginx/caddy para SSE estável (idle/timeout)"
-    body: "Configurar proxy para conexões longas e timeouts adequados."
-    milestone: "M3 Stream"
-    labels: ["infra"]
-
-  - title: "Docs: troubleshooting do stream"
-    body: "Runbook de problemas comuns (CORS, proxies, timeouts)."
-    milestone: "M3 Stream"
-    labels: ["docs", "stream"]
-
-  # ============================
-  # Semana 4 — Diagnósticos + Links
-  # ============================
-  - title: "Modelagem de Links (mínima viável)"
-    body: "Definir schema/linkagem Zabbix↔topologia (fonte e destino)."
-    milestone: "M4 Diag+Links"
-    labels: ["backend", "zabbix"]
-
-  - title: "Backend: /api/topology/links (MVP)"
-    body: "Servir links com status (up/down/degraded) e metadados básicos."
+  # -------------------------
+  # Semana 4 — Diag + Links
+  # -------------------------
+  - title: "Backend: modelo e API de Links"
+    body: |
+      Modelar links:
+      - Tabela links (source, target, type, bandwidth, meta)
+      - GET/POST/PUT para manutenção
+      - Hook de inferência futura (LLDP/SNMP) — backlog
     milestone: "M4 Diag+Links"
     labels: ["backend"]
 
-  - title: "Frontend: render de links + performance mode"
-    body: "Desenho performático de links; indicador de modo performance."
-    milestone: "M4 Diag+Links"
-    labels: ["frontend", "ux"]
-
-  - title: "Diagnostics: /api/diag/ping|traceroute|ssh (stub)"
-    body: "Endpoints que executam stubs ou comandos controlados (com timeout)."
+  - title: "Backend: endpoints /api/diag/ping e /api/diag/traceroute"
+    body: |
+      Implementar rotas que disparem diagnósticos:
+      - Executar comandos com sandbox e timeouts
+      - Logar requisições e resultados
     milestone: "M4 Diag+Links"
     labels: ["backend", "diagnostics", "security"]
 
-  - title: "Frontend: NodeInfoCard/LinkInfoCard → ações"
-    body: "Botões de diagnóstico chamando as rotas; feedback de execução."
+  - title: "Frontend: integrar ações (Ping/Traceroute/SSH) nos cards"
+    body: |
+      Ligar botões de NodeInfoCard/LinkInfoCard às rotas:
+      - Exibir resultado no UI (modal/log)
+      - Feedback de execução/erro
     milestone: "M4 Diag+Links"
     labels: ["frontend", "diagnostics", "ux"]
 
-  - title: "Zabbix: throughput/latência (itens) → métricas"
-    body: "Coletar itens de desempenho e expor no stream/REST."
+  - title: "Frontend: performance mode no NetworkMap (grandes grafos)"
+    body: |
+      Ativar modo performance quando exceder limiares:
+      - desabilitar animações pesadas
+      - limitar interações
+      - indicador visual
     milestone: "M4 Diag+Links"
-    labels: ["backend", "zabbix"]
+    labels: ["frontend", "ux"]
 
-  - title: "Docs: políticas de execução remota"
-    body: "Orientações de segurança para ping/traceroute/ssh nos ambientes."
-    milestone: "M4 Diag+Links"
-    labels: ["docs", "security"]
-
-  # ============================
+  # -------------------------
   # Semana 5 — Segurança + Setup
-  # ============================
-  - title: "Auth: requireAuth em rotas sensíveis + RBAC"
-    body: "Proteger rotas admin; papéis (admin/viewer); testes de acesso."
+  # -------------------------
+  - title: "Backend: RBAC (roles: admin, operator, viewer)"
+    body: |
+      Implementar RBAC:
+      - middleware requireAuth/requireRole
+      - proteger rotas sensíveis (settings, diag, admin)
     milestone: "M5 Segurança+Setup"
     labels: ["backend", "security"]
 
-  - title: "Segredos: criptografia em repouso"
-    body: "Criptografar segredos no DB (Zabbix tokens, webhooks) com KMS/ENV."
+  - title: "Backend: criptografia de segredos (at-rest)"
+    body: |
+      Armazenar segredos de forma segura (ex: libsodium):
+      - chave mestra por env
+      - rotas nunca retornam segredos em claro
     milestone: "M5 Segurança+Setup"
-    labels: ["backend", "security", "infra"]
+    labels: ["backend", "security"]
 
-  - title: "Setup seguro (/setup) + validação"
-    body: "Frontend/Backend com validações, máscaras e testes de setup."
+  - title: "Setup: wizard seguro + validação de config"
+    body: |
+      Atualizar /setup:
+      - validação server-side
+      - aplicar configurações com script idempotente
+      - feedback detalhado de erro
     milestone: "M5 Segurança+Setup"
     labels: ["frontend", "backend", "security"]
 
-  - title: "Backup/Restore: scripts e validação E2E"
-    body: "db-backup.sh e restore-db.sh funcionando e documentados."
+  - title: "DB: backup/restore (db-backup.sh e restore-db.sh)"
+    body: |
+      Finalizar scripts de backup e restauração com testes:
+      - storage configurável
+      - documentação operacional
     milestone: "M5 Segurança+Setup"
     labels: ["infra", "docs"]
 
-  - title: "Polimento UI (acessibilidade e i18n mínima)"
-    body: "Labels ARIA, navegação por teclado, textos revisados."
+  - title: "QA: testes de integração (API + DB) e smoke E2E"
+    body: |
+      Adicionar testes de integração (supertest) e smoke E2E (Playwright/Cypress)
+      para os fluxos críticos.
     milestone: "M5 Segurança+Setup"
-    labels: ["frontend", "ux", "enhancement"]
+    labels: ["tests", "backend", "frontend"]
 
-  - title: "Hardening Docker/Compose"
-    body: "Usuários não-root, read-only FS onde possível, healthchecks."
-    milestone: "M5 Segurança+Setup"
-    labels: ["infra", "security"]
-
-  # ============================
+  # -------------------------
   # Semana 6 — Release 1.0
-  # ============================
-  - title: "Performance Review (mapa e stream)"
-    body: "Tuning de camadas, debounce, batch; targets de FPS e latência."
+  # -------------------------
+  - title: "Hardening: CORS/Helmet/Rate limit e logs"
+    body: |
+      Aplicar medidas de hardening:
+      - helmet, cors with allowlist
+      - rate limit por rota
+      - logs estruturados com correlação
     milestone: "M6 Release 1.0"
-    labels: ["frontend", "backend", "stream", "enhancement"]
+    labels: ["backend", "security", "infra"]
 
-  - title: "Observabilidade: dashboards + alertas internos"
-    body: "Grafana/Prom ou equivalente com métricas do sistema."
+  - title: "Observabilidade: dashboards e alertas de plataforma"
+    body: |
+      Incluir dashboards (Grafana) e alertas de plataforma:
+      - uptime, erros 5xx, latência, consumo de stream
     milestone: "M6 Release 1.0"
-    labels: ["infra"]
+    labels: ["infra", "docs"]
 
-  - title: "Docs: Deploy reproduzível <15min"
-    body: "Guia completo de deploy prod; requisitos; troubleshooting."
+  - title: "Docs: RUNBOOKs, CHANGELOG e Guia de Deploy"
+    body: |
+      Consolidar documentação para operação:
+      - runbooks de incidentes
+      - CHANGELOG v1.0.0
+      - guia de deploy reproduzível (<15min)
     milestone: "M6 Release 1.0"
-    labels: ["docs", "infra"]
+    labels: ["docs"]
 
-  - title: "CHANGELOG + Tag v1.0.0"
-    body: "Gerar changelog, criar tag e release notes no GitHub."
+  - title: "CI/CD: release pipeline com tags e artefatos"
+    body: |
+      Configurar pipeline de release:
+      - criar tag, gerar artefatos docker
+      - publicar imagens e changelog
     milestone: "M6 Release 1.0"
-    labels: ["docs", "infra"]
+    labels: ["infra", "tests"]
 
-  - title: "Runbooks: operações e incidentes"
-    body: "Procedimentos de on-call, SLAs, e respostas a incidentes."
-    milestone: "M6 Release 1.0"
-    labels: ["docs", "infra", "security"]
+  # -------------------------
+  # Extras (boa porta de entrada)
+  # -------------------------
+  - title: "Frontend: melhorias de acessibilidade no Sidebar"
+    body: |
+      Aumentar cobertura ARIA, navegação via teclado e foco visível
+      no TopologySidebar e componentes de filtro.
+    milestone: "M1 Fundação"
+    labels: ["frontend", "ux", "good-first-issue"]
 
-  - title: "Bug bash final e correções críticas"
-    body: "Sessão de validação; criar/fechar bugs bloqueadores para a 1.0."
-    milestone: "M6 Release 1.0"
-    labels: ["bug", "help-wanted"]
+  - title: "Docs: adicionar ISSUE_TEMPLATE e PR_TEMPLATE"
+    body: |
+      Criar templates para issues e pull requests
+      alinhados com o fluxo do projeto.
+    milestone: "M1 Fundação"
+    labels: ["docs", "good-first-issue"]
+
+  - title: "Tests: configurar cobertura mínima e relatório"
+    body: |
+      Definir threshold de cobertura e publicar relatório em CI.
+    milestone: "M5 Segurança+Setup"
+    labels: ["tests", "help-wanted"]
