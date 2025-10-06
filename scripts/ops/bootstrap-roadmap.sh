@@ -1,190 +1,236 @@
 #!/usr/bin/env bash
-# ------------------------------------------------------------------------------
 # scripts/ops/bootstrap-roadmap.sh
 #
-# Bootstrap do roadmap do repositório (labels, milestones e issues) a partir de
-# um arquivo YAML (scripts/ops/roadmap.yml), usando GitHub CLI (gh) + yq.
-#
+# Bootstrap do roadmap do MapsProve (labels, milestones e issues) a partir de scripts/ops/roadmap.yml
 # Requisitos:
-#   - gh (GitHub CLI) instalado e autenticado:  gh auth status
-#   - yq (Mike Farah, v4+):                     https://github.com/mikefarah/yq
-#
+#   - gh (GitHub CLI) autenticado:    gh auth status
+#   - yq (YAML parser):                https://github.com/mikefarah/yq/
 # Uso:
 #   chmod +x scripts/ops/bootstrap-roadmap.sh
-#   scripts/ops/bootstrap-roadmap.sh <owner/repo> [caminho/para/roadmap.yml]
+#   scripts/ops/bootstrap-roadmap.sh <owner/repo>
 #
-#   Exemplo:
-#     scripts/ops/bootstrap-roadmap.sh kaled182/mapsprove
-#     scripts/ops/bootstrap-roadmap.sh kaled182/mapsprove scripts/ops/roadmap.yml
+# Variáveis de ambiente:
+#   ROADMAP_FILE  -> caminho do YAML (default: scripts/ops/roadmap.yml)
+#   DRY_RUN=true  -> apenas imprime ações (não executa gh)
+#   START_DATE=YYYY-MM-DD -> data-base para calcular due_on dos milestones (default: hoje)
 #
-# Notas:
-#   - Idempotente: reexecutar não duplica labels/milestones/issues.
-#   - Datas dos milestones: calculadas a partir da semana (week) do YAML,
-#     usando o horário UTC em ISO-8601.
-#   - Compatível com GNU date (Linux) e BSD date (macOS).
-# ------------------------------------------------------------------------------
-
 set -euo pipefail
-IFS=$'\n\t'
 
-# ---- Configuração de saída (cores opcionais) ---------------------------------
-if [[ -t 1 ]]; then
-  BOLD="$(tput bold)"; DIM="$(tput dim)"; RESET="$(tput sgr0)"
-else
-  BOLD=""; DIM=""; RESET=""
+# ------------------------------ Utils ------------------------------
+
+log() { printf '%b\n' "$*"; }
+info() { log "ℹ️  $*"; }
+ok()   { log "✅ $*"; }
+warn() { log "⚠️  $*"; }
+err()  { log "❌ $*" >&2; }
+
+is_gnu_date() {
+  date --version >/dev/null 2>&1
+}
+
+DATE_CMD="date"
+if command -v gdate >/dev/null 2>&1; then
+  DATE_CMD="gdate"
 fi
 
-log()  { echo "[$(date -u +%H:%M:%S)] $*"; }
-die()  { echo "❌ $*" >&2; exit 1; }
-
 require_tools() {
-  command -v gh >/dev/null 2>&1 || die "GitHub CLI (gh) não encontrado. Instale: https://cli.github.com/"
-  gh auth status >/dev/null 2>&1 || die "gh não está autenticado. Rode: gh auth login"
-
-  command -v yq >/dev/null 2>&1 || die "yq (YAML parser) não encontrado. Instale: https://github.com/mikefarah/yq/"
-}
-
-# Retorna a data due_on (ISO-8601 UTC) somando N semanas a partir de hoje.
-# Compatível com GNU date (Linux) e BSD date (macOS).
-compute_due_on_iso() {
-  local week="$1"
-
-  if date --version >/dev/null 2>&1; then
-    # GNU date
-    date -u -d "+$((week * 7)) days" --iso-8601=seconds
-  else
-    # BSD date (macOS)
-    date -u -v+"${week}"w -Iseconds
+  if ! command -v gh >/dev/null 2>&1; then
+    err "GitHub CLI (gh) não encontrado. Instale em https://cli.github.com/"
+    exit 1
+  fi
+  if ! gh auth status >/dev/null 2>&1; then
+    err "gh não está autenticado. Execute: gh auth login"
+    exit 1
+  fi
+  if ! command -v yq >/dev/null 2>&1; then
+    err "yq (YAML parser) não encontrado. Instale em https://github.com/mikefarah/yq/"
+    exit 1
   fi
 }
 
-# ------------------------------------------------------------------------------
-# Labels
-# ------------------------------------------------------------------------------
-process_labels() {
-  local repo="$1" file="$2"
-  log "==> Criando/atualizando labels…"
-
-  # yq retorna: name \t color \t description
-  yq -r '.labels[] | [.name, .color, .description] | @tsv' "$file" | \
-  while IFS=$'\t' read -r name color desc; do
-    if gh label list -R "$repo" --limit 300 | grep -Fq "$name"; then
-      gh label edit "$name" -R "$repo" --color "$color" --description "$desc" >/dev/null
-      echo "🔁  label atualizado: ${BOLD}$name${RESET}"
-    else
-      gh label create "$name" -R "$repo" --color "$color" --description "$desc" >/dev/null
-      echo "🏷️  label criado: ${BOLD}$name${RESET}"
-    fi
-  done
+resolve_repo() {
+  local repo_arg="${1:-}"
+  if [[ -n "$repo_arg" ]]; then
+    echo "$repo_arg"
+    return
+  fi
+  # tenta detectar repo atual
+  local detected
+  detected="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
+  if [[ -z "$detected" ]]; then
+    err "Não foi possível detectar o repositório. Use: $0 <owner/repo>"
+    exit 1
+  fi
+  echo "$detected"
 }
 
-# ------------------------------------------------------------------------------
-# Milestones
-# ------------------------------------------------------------------------------
-process_milestones() {
-  local repo="$1" file="$2"
-  log "==> Criando/atualizando milestones…"
+# Calcula due_on (ISO 8601 UTC) adicionando N semanas à data-base (ou hoje)
+compute_due_date() {
+  local week="$1"                # inteiro >= 1
+  local base="${START_DATE:-}"   # YYYY-MM-DD (opcional)
+  local iso
 
-  # Loop por milestones: title, description, week
-  yq -r '.milestones[] | [.title, .description, .week] | @tsv' "$file" | \
-  while IFS=$'\t' read -r title desc week; do
-    local due_on
-    due_on="$(compute_due_on_iso "$week")"
-
-    # Buscar milestone por título (em todas as situações: open/closed)
-    local id
-    id="$(gh api "repos/$repo/milestones?state=all" --jq ".[] | select(.title==\"$title\") | .number" 2>/dev/null || true)"
-
-    if [[ -z "${id}" ]]; then
-      gh api "repos/$repo/milestones" \
-        -f title="$title" \
-        -f description="$desc" \
-        -f due_on="$due_on" >/dev/null
-      echo "🏁  milestone criado: ${BOLD}$title${RESET} ${DIM}(due: ${due_on})${RESET}"
+  if [[ "$DATE_CMD" = "gdate" ]] || is_gnu_date; then
+    if [[ -n "$base" ]]; then
+      iso="$($DATE_CMD -u -d "${base} +${week} week" --iso-8601=seconds)"
     else
-      gh api -X PATCH "repos/$repo/milestones/$id" \
-        -f title="$title" \
-        -f description="$desc" \
-        -f due_on="$due_on" >/dev/null
-      echo "🔁  milestone atualizado: ${BOLD}$title${RESET} ${DIM}(due: ${due_on})${RESET}"
+      iso="$($DATE_CMD -u -d "+${week} week" --iso-8601=seconds)"
     fi
-  done
+  else
+    # BSD date (macOS). Requer -v+<n>w para adicionar semanas.
+    if [[ -n "$base" ]]; then
+      # tenta parsear base como YYYY-MM-DD
+      iso="$(date -u -j -f "%Y-%m-%d" "$base" -v+${week}w -Iseconds 2>/dev/null || true)"
+      if [[ -z "$iso" ]]; then
+        warn "START_DATE inválida para BSD date. Usando hoje."
+        iso="$(date -u -v+${week}w -Iseconds)"
+      fi
+    else
+      iso="$(date -u -v+${week}w -Iseconds)"
+    fi
+  fi
+  echo "$iso"
 }
 
-# ------------------------------------------------------------------------------
-# Issues
-# ------------------------------------------------------------------------------
-process_issues() {
-  local repo="$1" file="$2"
-  log "==> Criando/atualizando issues…"
-
-  local count
-  count="$(yq '.issues | length' "$file")"
-  if [[ "${count}" -eq 0 ]]; then
-    echo "ℹ️  Nenhuma issue definida em ${file}"
+# Execução condicional (respeita DRY_RUN)
+gh_run() {
+  if [[ "${DRY_RUN:-}" = "true" ]]; then
+    echo "[DRY_RUN] gh $*"
     return 0
   fi
+  gh "$@"
+}
 
-  for i in $(seq 0 $((count - 1))); do
+gh_api() {
+  if [[ "${DRY_RUN:-}" = "true" ]]; then
+    echo "[DRY_RUN] gh api $*"
+    return 0
+  fi
+  gh api "$@"
+}
+
+# ------------------------------ Processadores ------------------------------
+
+process_labels() {
+  local repo="$1" file="$2"
+  info "==> Criando/atualizando labels…"
+  local total
+  total="$(yq '.labels | length' "$file")"
+  [[ "$total" -gt 0 ]] || { warn "Nenhuma label definida em $file"; return; }
+
+  for i in $(seq 0 $((total - 1))); do
+    local name color desc
+    name="$(yq -r ".labels[$i].name" "$file")"
+    color="$(yq -r ".labels[$i].color" "$file")"
+    desc="$(yq -r ".labels[$i].description" "$file")"
+
+    if gh label list -R "$repo" --limit 300 | awk '{print $1}' | grep -Fxq "$name"; then
+      gh_run label edit "$name" -R "$repo" --color "$color" --description "$desc" >/dev/null
+      log "🔁 label atualizado: $name"
+    else
+      gh_run label create "$name" -R "$repo" --color "$color" --description "$desc" >/dev/null
+      log "🏷️  label criado: $name"
+    fi
+  done
+  ok "Labels processadas"
+}
+
+process_milestones() {
+  local repo="$1" file="$2"
+  info "==> Criando/atualizando milestones…"
+  local total
+  total="$(yq '.milestones | length' "$file")"
+  [[ "$total" -gt 0 ]] || { warn "Nenhum milestone definido em $file"; return; }
+
+  for i in $(seq 0 $((total - 1))); do
+    local title desc week due
+    title="$(yq -r ".milestones[$i].title" "$file")"
+    desc="$(yq -r ".milestones[$i].description" "$file")"
+    week="$(yq -r ".milestones[$i].week" "$file")"
+
+    # calcula due_on
+    due="$(compute_due_date "$week")"
+
+    # busca id existente
+    local id
+    id="$(gh_api "repos/$repo/milestones" --jq ".[] | select(.title==\"$title\") | .number" 2>/dev/null || true)"
+
+    if [[ -z "$id" ]]; then
+      gh_api "repos/$repo/milestones" -f title="$title" -f description="$desc" -f due_on="$due" >/dev/null
+      log "🏁 milestone criado: $title (due_on: ${due%T*})"
+    else
+      gh_api -X PATCH "repos/$repo/milestones/$id" -f title="$title" -f description="$desc" -f due_on="$due" >/dev/null
+      log "🔁 milestone atualizado: $title (due_on: ${due%T*})"
+    fi
+  done
+  ok "Milestones processados"
+}
+
+process_issues() {
+  local repo="$1" file="$2"
+  info "==> Criando/atualizando issues…"
+  local total
+  total="$(yq '.issues | length' "$file")"
+  [[ "$total" -gt 0 ]] || { warn "Nenhuma issue definida em $file"; return; }
+
+  for i in $(seq 0 $((total - 1))); do
     local title body milestone labels_csv
     title="$(yq -r ".issues[$i].title" "$file")"
     body="$(yq -r ".issues[$i].body" "$file")"
     milestone="$(yq -r ".issues[$i].milestone" "$file")"
-    labels_csv="$(yq -r ".issues[$i].labels | (if length>0 then join(\",\") else \"\" end)" "$file")"
+    labels_csv="$(yq -r ".issues[$i].labels | join(\",\")" "$file")"
 
-    # Tenta localizar uma issue existente por título (em qualquer estado)
-    local existing_issue
-    existing_issue="$(gh issue list -R "$repo" --state all --search "in:title \"$title\"" --json number --jq '.[0].number' 2>/dev/null || true)"
+    # checa existência por título (qualquer estado)
+    local existing
+    existing="$(gh issue list -R "$repo" --state all --search "in:title \"$title\"" --json number,title --jq '.[0].number' 2>/dev/null || true)"
 
-    if [[ -n "$existing_issue" ]]; then
-      echo "🔎  issue já existe (#$existing_issue): ${BOLD}$title${RESET}"
+    if [[ -n "$existing" ]]; then
+      log "🔎 issue já existe (#$existing): $title"
       continue
     fi
 
-    # Criação
-    if [[ -n "$labels_csv" ]]; then
-      gh issue create -R "$repo" --title "$title" --body "$body" --milestone "$milestone" --label "$labels_csv" >/dev/null
+    # cria
+    if [[ -n "$labels_csv" && "$labels_csv" != "null" ]]; then
+      gh_run issue create -R "$repo" --title "$title" --body "$body" --milestone "$milestone" --label "$labels_csv" >/dev/null
     else
-      gh issue create -R "$repo" --title "$title" --body "$body" --milestone "$milestone" >/dev/null
+      gh_run issue create -R "$repo" --title "$title" --body "$body" --milestone "$milestone" >/dev/null
     fi
-
-    echo "🆕  issue criada: ${BOLD}$title${RESET} ${DIM}(milestone: $milestone)${RESET}"
+    log "🆕 issue criado: $title"
   done
+  ok "Issues processadas"
 }
 
-# ------------------------------------------------------------------------------
-# Main
-# ------------------------------------------------------------------------------
+# ------------------------------ Main ------------------------------
+
 main() {
   require_tools
 
-  # Repositório destino
-  local REPO="${1:-}"
-  if [[ -z "${REPO}" ]]; then
-    # Tentativa de auto-detecção via gh
-    REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
-    [[ -z "$REPO" ]] && die "Não foi possível detectar o repositório. Use: $0 <owner/repo>"
+  local REPO
+  REPO="$(resolve_repo "${1:-}")"
+  info "📦 Repositório alvo: $REPO"
+
+  local SCRIPT_DIR ROADMAP_FILE
+  SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+  ROADMAP_FILE="${ROADMAP_FILE:-$SCRIPT_DIR/roadmap.yml}"
+
+  if [[ ! -f "$ROADMAP_FILE" ]]; then
+    err "Arquivo de dados não encontrado: $ROADMAP_FILE"
+    exit 1
   fi
 
-  # Arquivo de dados YAML
-  local ROADMAP_FILE="${2:-}"
-  if [[ -z "${ROADMAP_FILE}" ]]; then
-    # Caminho padrão relativo a este script
-    local SCRIPT_DIR
-    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
-    ROADMAP_FILE="${SCRIPT_DIR}/roadmap.yml"
+  info "🗂  Usando roadmap: $ROADMAP_FILE"
+  if [[ "${DRY_RUN:-}" = "true" ]]; then
+    warn "DRY_RUN habilitado — nenhuma alteração será aplicada."
   fi
-
-  [[ -f "$ROADMAP_FILE" ]] || die "Arquivo de dados não encontrado: $ROADMAP_FILE"
-
-  log "📦 Repositório alvo: ${BOLD}${REPO}${RESET}"
-  log "🗂  Fonte do roadmap: ${BOLD}${ROADMAP_FILE}${RESET}"
+  if [[ -n "${START_DATE:-}" ]]; then
+    info "🗓  START_DATE definido: ${START_DATE}"
+  fi
 
   process_labels     "$REPO" "$ROADMAP_FILE"
   process_milestones "$REPO" "$ROADMAP_FILE"
   process_issues     "$REPO" "$ROADMAP_FILE"
 
-  log "✅ Roadmap bootstrap concluído!"
+  ok "Roadmap bootstrap concluído!"
 }
 
 main "$@"
