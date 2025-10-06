@@ -1,0 +1,232 @@
+# scripts/ops/roadmap.yml
+# Descrição do roadmap para o script bootstrap-roadmap.sh
+# - Os milestones têm a propriedade "week" para permitir cálculo dinâmico do due_on (ex.: +N semanas)
+
+labels:
+  - name: "backend"
+    color: "0366d6"
+    description: "Tarefas de servidor, API, integrações"
+  - name: "frontend"
+    color: "1f883d"
+    description: "Tarefas de UI/UX e React"
+  - name: "infra"
+    color: "8250df"
+    description: "DevOps, Docker, deploy, observabilidade"
+  - name: "zabbix"
+    color: "d73a4a"
+    description: "Integração com Zabbix"
+  - name: "stream"
+    color: "0969da"
+    description: "SSE/WebSocket e tempo real"
+  - name: "security"
+    color: "a40e26"
+    description: "Autenticação, autorização, segredos"
+  - name: "diagnostics"
+    color: "0e8a16"
+    description: "Ping, traceroute, SSH e afins"
+  - name: "ux"
+    color: "fbca04"
+    description: "Experiência do usuário e acessibilidade"
+  - name: "good-first-issue"
+    color: "7057ff"
+    description: "Bom para iniciantes no projeto"
+  - name: "help-wanted"
+    color: "008672"
+    description: "Ajuda bem-vinda"
+  - name: "blocked"
+    color: "b60205"
+    description: "Bloqueado por dependências"
+
+milestones:
+  - title: "M1 Fundação"
+    description: "Base do projeto, contratos e esqueleto"
+    week: 1
+  - title: "M2 Zabbix MVP"
+    description: "Integração de hosts/alertas do Zabbix (mínima)"
+    week: 2
+  - title: "M3 Stream"
+    description: "SSE robusto com retomada e cache"
+    week: 3
+  - title: "M4 Diag+Links"
+    description: "Ações de diagnóstico e modelagem de links"
+    week: 4
+  - title: "M5 Segurança+Setup"
+    description: "RBAC, setup seguro e backup/restore"
+    week: 5
+  - title: "M6 Release 1.0"
+    description: "Tuning, observabilidade e release final"
+    week: 6
+
+issues:
+  # -------------------------
+  # Semana 1 (M1 Fundação)
+  # -------------------------
+  - title: "Backend: /livez, /readyz, /version"
+    body: "Implementar endpoints básicos de health/versionamento com testes e logs estruturados."
+    milestone: "M1 Fundação"
+    labels: ["backend"]
+
+  - title: "Backend: migrations nodes/links + repo básico"
+    body: "Criar schema mínimo para nodes/links e repositório (CRUD básico / upsert)."
+    milestone: "M1 Fundação"
+    labels: ["backend"]
+
+  - title: "Backend: stub /api/topology (+detalhes por id)"
+    body: "Fornecer /api/topology com dados fake e endpoints de detalhes para destravar o frontend."
+    milestone: "M1 Fundação"
+    labels: ["backend"]
+
+  - title: "Backend: SSE esqueleto /api/stream (heartbeat)"
+    body: "SSE básico com event:heartbeat a cada N segundos; sem dados ainda."
+    milestone: "M1 Fundação"
+    labels: ["backend", "stream"]
+
+  - title: "Frontend: conectar TopologyLayout a /api/topology (seed)"
+    body: "Consumir a rota stub e renderizar nodes/links seed; sem Zabbix real por enquanto."
+    milestone: "M1 Fundação"
+    labels: ["frontend", "ux"]
+
+  - title: "Frontend: useStatusStream com heartbeat e estados"
+    body: "Exibir status connected/paused/error e reconectar automaticamente."
+    milestone: "M1 Fundação"
+    labels: ["frontend", "stream"]
+
+  - title: "DevOps: docker-compose.prod.yml + HEALTHCHECK"
+    body: "Multi-stage build e healthchecks em serviços; doc rápida de execução."
+    milestone: "M1 Fundação"
+    labels: ["infra"]
+
+  - title: "Legal: harmonizar LICENSE (MIT vs GPLv3)"
+    body: "Decidir a licença e alinhar README/headers de arquivos."
+    milestone: "M1 Fundação"
+    labels: ["infra"]
+
+  # -------------------------
+  # Semana 2 (M2 Zabbix MVP)
+  # -------------------------
+  - title: "Backend: ZabbixClient (auth + host.get + problem.get)"
+    body: "Cliente minimalista com retries, timeouts e logs para autenticar e listar hosts/problems."
+    milestone: "M2 Zabbix MVP"
+    labels: ["backend", "zabbix"]
+
+  - title: "Backend: TopologyService.refreshSnapshot() hosts→nodes"
+    body: "Mapear hosts para nodes (status/coord) e persistir; emitir snapshot versionado."
+    milestone: "M2 Zabbix MVP"
+    labels: ["backend", "zabbix"]
+
+  - title: "Backend: emitir snapshot no SSE"
+    body: "Publicar event:topology com version; preparar para patches no futuro."
+    milestone: "M2 Zabbix MVP"
+    labels: ["backend", "stream"]
+
+  - title: "Frontend: consumir nodes reais do Zabbix"
+    body: "Trocar seed por dados reais; sinalizar 'dados reais' no header."
+    milestone: "M2 Zabbix MVP"
+    labels: ["frontend", "zabbix"]
+
+  - title: "Docs: onboarding Zabbix de teste"
+    body: "Passo a passo para apontar para um Zabbix de homologação."
+    milestone: "M2 Zabbix MVP"
+    labels: ["infra", "zabbix"]
+
+  # -------------------------
+  # Semana 3 (M3 Stream)
+  # -------------------------
+  - title: "Backend: SSE robusto (Last-Event-ID, replay, health)"
+    body: "Adicionar retomada por ID, replay parcial e métricas internas do emissor."
+    milestone: "M3 Stream"
+    labels: ["backend", "stream"]
+
+  - title: "Frontend: retomada do stream + cache offline de alertas"
+    body: "Persistir últimas mensagens e retomar sem perder eventos; UI resiliente."
+    milestone: "M3 Stream"
+    labels: ["frontend", "stream"]
+
+  - title: "Observabilidade: métricas do stream (prom-client)"
+    body: "Expor reconexões, eventos/min, latência; integrar nos dashboards."
+    milestone: "M3 Stream"
+    labels: ["infra", "stream"]
+
+  # -------------------------
+  # Semana 4 (M4 Diag+Links)
+  # -------------------------
+  - title: "Backend: rotas diag (/api/diag/ping|traceroute|ssh)"
+    body: "Stubs com execução segura e timeouts; logs e RBAC básico."
+    milestone: "M4 Diag+Links"
+    labels: ["backend", "diagnostics", "security"]
+
+  - title: "Backend: CRUD mínimo de links"
+    body: "Endpoints para manter links e expor no /api/topology."
+    milestone: "M4 Diag+Links"
+    labels: ["backend"]
+
+  - title: "Frontend: acionar diag pelos cards"
+    body: "NodeInfoCard/LinkInfoCard chamando ping/traceroute com feedback de execução."
+    milestone: "M4 Diag+Links"
+    labels: ["frontend", "diagnostics"]
+
+  - title: "Frontend: métricas em tempo real nos links"
+    body: "Sparklines/metric bars alimentadas por event:metrics."
+    milestone: "M4 Diag+Links"
+    labels: ["frontend", "stream"]
+
+  - title: "Frontend: badge '⚡ Modo performance' p/ >500 nós"
+    body: "Ativar ajustes visuais e mensagem quando exceder limite."
+    milestone: "M4 Diag+Links"
+    labels: ["frontend", "ux"]
+
+  # -------------------------
+  # Semana 5 (M5 Segurança+Setup)
+  # -------------------------
+  - title: "Backend: requireAuth + RBAC"
+    body: "Aplicar middleware nas rotas sensíveis; perfis admin/user."
+    milestone: "M5 Segurança+Setup"
+    labels: ["backend", "security"]
+
+  - title: "Backend: proteger/remover /api/auth/seed/admin"
+    body: "Eliminar risco de elevação de privilégio em produção."
+    milestone: "M5 Segurança+Setup"
+    labels: ["backend", "security"]
+
+  - title: "Backend: criptografar credenciais Zabbix"
+    body: "Armazenamento seguro de segredos (em repouso) e rotação."
+    milestone: "M5 Segurança+Setup"
+    labels: ["backend", "security"]
+
+  - title: "Frontend: página Setup finalizada"
+    body: "Validação de conexão Zabbix + feedback de erro; UX polida."
+    milestone: "M5 Segurança+Setup"
+    labels: ["frontend", "ux"]
+
+  - title: "DevOps: Backup + Restore testados"
+    body: "Script de restore finalizado e validado end-to-end."
+    milestone: "M5 Segurança+Setup"
+    labels: ["infra"]
+
+  # -------------------------
+  # Semana 6 (M6 Release 1.0)
+  # -------------------------
+  - title: "Backend: tuning (índices, circuit breaker, payloads)"
+    body: "Ajustes finais de performance e resiliência."
+    milestone: "M6 Release 1.0"
+    labels: ["backend"]
+
+  - title: "Frontend: perf audit + lazy-loading"
+    body: "Revisão Lighthouse e carregamento sob demanda onde fizer sentido."
+    milestone: "M6 Release 1.0"
+    labels: ["frontend"]
+
+  - title: "DevOps: compose prod final + doc de deploy"
+    body: "Passo a passo staging→prod reproduzível em <15min."
+    milestone: "M6 Release 1.0"
+    labels: ["infra"]
+
+  - title: "DevOps: dashboards Grafana + runbook"
+    body: "Observabilidade (stream/CPU/mem) e procedimentos de incidente."
+    milestone: "M6 Release 1.0"
+    labels: ["infra"]
+
+  - title: "Release: tag v1.0.0 + CHANGELOG"
+    body: "Empacotar a versão, gerar changelog e criar tag/gh release."
+    milestone: "M6 Release 1.0"
+    labels: ["infra"]
